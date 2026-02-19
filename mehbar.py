@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-
+from __future__ import annotations
 from typing import Sequence, Any, Mapping, Callable
 from datetime import datetime
 from enum import Enum
 from itertools import compress
 from pathlib import Path
 from ctypes import CDLL
+from inspect import Parameter, signature
 
 import asyncio
-import inspect
 import json
 import re
 import string
@@ -30,9 +30,12 @@ from pulsectl_asyncio import PulseAsync
 
 import psutil
 import gi
+import os
+
+LOG_LEVEL = os.getenv("MEHBAR_LOG_LEVEL", "DEBUG")
 
 logging.basicConfig(
-    format="[%(asctime)s] %(levelname)s: %(message)s", level=logging.DEBUG
+    format="[%(asctime)s] *%(levelname)s*: %(message)s", level=getattr(logging, LOG_LEVEL, logging.INFO)
 )
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
@@ -63,13 +66,15 @@ from gi.repository import Gtk, Gdk, Gio, GLib
 from gi.repository import Gtk4LayerShell
 
 
-def overlay_dict_r(bottom: dict[Any, Any], top: dict[Any, Any]):
+def overlay_dict_r(bottom: dict[Any, Any], top: dict[Any, Any], max_depth: int = 10, depth: int = 0):
+    if depth > max_depth:
+        raise ValueError(f"maximum nesting depth exceeded: {max_depth}")
 
     for ktop, vtop in top.items():
         if isinstance(vtop, dict):
             if ktop not in bottom or not isinstance(bottom[ktop], dict):
                 bottom[ktop] = {}
-            overlay_dict_r(bottom[ktop], vtop)
+            overlay_dict_r(bottom[ktop], vtop, max_depth, depth + 1)
         else:
             bottom[ktop] = vtop
 
@@ -78,12 +83,8 @@ def overlay_dict_r(bottom: dict[Any, Any], top: dict[Any, Any]):
 #     def __hash__(self):
 #         return hash(frozenset(self))
 
-
-class MouseButton(Enum):
-    LEFT = 1
-    RIGHT = 2
-    SCROLLUP = 3
-    SCROLLDOWN = 4
+class BarConfigError(Exception):
+    pass
 
 class SinkAction(Enum):
     VOLUME = 1
@@ -117,7 +118,6 @@ class Action:
     def run(self):
         pass
 
-
 class CallableAction(Action):
 
     def __init__(self, func: Callable, *args, **kwargs):
@@ -147,6 +147,10 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         self.interval = max(int(interval), 0)
         self.label_format = label_format if label_format is not None else ""
         self.ramp = ramp
+
+        self.set_xalign(0.5)
+        self.set_yalign(0.5)
+        self.set_single_line_mode(True)
 
         self.add_css_class("bar-widget")
 
@@ -258,7 +262,7 @@ class BarWidgetStatic(BarWidget):
     def __init__(self, label_format: str):
         super().__init__(0, label_format)
         self.set_label(self.label_format)
-        self.set_xalign(Gtk.Align.CENTER)
+
 
 
 class BarWidgetTemperature(BarWidget):
@@ -278,6 +282,11 @@ class BarWidgetTemperature(BarWidget):
 
         self.results = []
 
+        # pre-generate formatted strings for all possible temperatures.
+        # this uses O(max_temp) memory for O(1) update speed.
+        # ranges of possible values in widgets are raltively narrow and do not
+        # exceed at most a copule of hundreds of short strings, hence the
+        # memory overhead is negligible.
         for temp in range(max_temp + 1):
             ramp_val = str()
 
@@ -352,6 +361,8 @@ class BarWidgetDiskUsage(BarWidget):
 
 class BarWidgetWifiSignal(BarWidget):
 
+    MAX_SIGNAL = 100
+
     def __init__(
         self,
         interval: int,
@@ -362,18 +373,15 @@ class BarWidgetWifiSignal(BarWidget):
         super().__init__(interval, label_format, ramp)
         self.iface = iface
 
-        max_sig = 100
-
-        # Pre-generate results to avoid generating them on the fly
         self.results = []
 
         if ramp is not None and (nramp := len(ramp) - 1) > 0:
             self.results.append(self.vformat_label(signal=0, ramp=ramp[0]))
 
-            for sig in range(1, max_sig + 1):
+            for sig in range(1, self.MAX_SIGNAL + 1):
 
                 if ramp is not None and (nramp := len(ramp) - 1) > 0:
-                    ramp_idx = int(min(sig, max_sig - 1) / (max_sig / nramp))
+                    ramp_idx = int(min(sig, self.MAX_SIGNAL - 1) / (self.MAX_SIGNAL / nramp))
                     ramp_val = ramp[1:][ramp_idx]
 
                 self.results.append(
@@ -428,7 +436,6 @@ class BarWidgetPulseVolume(BarWidget):
 
         self.sink_action_queue = asyncio.Queue(maxsize=8)
 
-        # Pre-generate results to avoid generating them on the fly
         self.results: list[list[str]] = [[], []]
 
         for vol in range(self.max_vol + 1):
@@ -674,68 +681,77 @@ class BarWidgetExecTail(BarWidget):
 
     async def run(self):
 
-        self.proc = await asyncio.create_subprocess_exec(
-            *self.cmdline,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                *self.cmdline,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
 
-        if self.proc.stdout is not None:
+            if self.proc.stdout is not None:
 
-            lps = 0
-            t0 = time.monotonic()
-            while line := await self.proc.stdout.readline():
-                lps += 1
-                t1 = time.monotonic()
+                lps = 0
+                t0 = time.monotonic()
+                while line := await self.proc.stdout.readline():
+                    lps += 1
+                    t1 = time.monotonic()
 
-                if (t1 - t0) >= 1:
-                    lps = 0
-                    t0 = t1
+                    if (t1 - t0) >= 1:
+                        lps = 0
+                        t0 = t1
 
-                if lps <= self.max_lps:
-                    self.vupdate_label(**json.loads(line))
-                    await asyncio.sleep(0.1)
-
-        await self.proc.wait()
+                    if lps <= self.max_lps:
+                        try:
+                            self.vupdate_label(**json.loads(line))
+                            await asyncio.sleep(0.1)
+                        except json.JSONDecodeError as ex:
+                            logging.error("Failed to parse JSON: %s", str(ex))
+            await self.proc.wait()
+        finally:
+            if self.proc and self.proc.returncode is None:
+                self.proc.terminate()
+                try:
+                    await asyncio.wait_for(self.proc.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    self.proc.kill()
 
     def stop(self):
         if self.proc is not None and self.proc.returncode is None:
             self.proc.terminate()
         super().stop()
 
+
 class BarWidgetExecRepeat(BarWidget):
-    pass
-# class BarWidgetExecRepeat(BarWidget):
-#     def __init__(
-#         self,
-#         interval: int,
-#         label_format: str,
-#         cmdline: list[str],
-#         max_lps: int,
-#     ):
-#         super().__init__(interval, label_format)
-#         self.max_lps = min(max_lps, 10)
-#         self.cmdline = cmdline
-#         self.proc = None
+    def __init__(
+        self,
+        interval: int,
+        label_format: str,
+        cmdline: list[str],
+        max_lps: int,
+    ):
+        super().__init__(interval, label_format)
+        self.max_lps = min(max_lps, 10)
+        self.cmdline = cmdline
+        self.proc = None
 
 
-#     def update(self):
-#         self.proc = await asyncio.create_subprocess_exec(
-#             *self.cmdline,
-#             stdout=asyncio.subprocess.PIPE,
-#             stderr=asyncio.subprocess.DEVNULL,
-#         )
+    async def update(self):
+        self.proc = await asyncio.create_subprocess_exec(
+            *self.cmdline,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
 
-#         stdout, _ = await self.proc.communicate()
+        stdout, _ = await self.proc.communicate()
 
-#         for line in stdout.decode().splitlines()[: self.max_lps]:
-#             self.vupdate_label(**json.loads(line))
-#         self.proc = None
+        for line in stdout.decode().splitlines()[: self.max_lps]:
+            self.vupdate_label(**json.loads(line))
+        self.proc = None
 
-#     def stop(self):
-#         if self.proc is not None and self.proc.returncode is None:
-#             self.proc.terminate()
-#         super().stop()
+    def stop(self):
+        if self.proc is not None and self.proc.returncode is None:
+            self.proc.terminate()
+        super().stop()
 
 
 class I3WorkspaceButton(I3ListenerMixin, BarWidget):
@@ -776,6 +792,7 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
         super().__init__(i3_conn=i3_conn, rewrite=rewrite)
 
         self.wsid_map: dict[str, int] = {}
+        self.ws_button_map: dict[str, I3WorkspaceButton] = {}
         self.always_show = [str(x) for x in always_show]
 
         self.max_workspaces = max(1, min(max_workspaces, self.MAX_WORKSPACES))
@@ -830,20 +847,20 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
         return self.cache[text]
 
 
-    def set_empty_idle(self, child: Gtk.Widget):
+    def set_empty_idle(self, child: Gtk.Widget) -> None:
         child.set_visible(False)
         child.remove_css_class("focused")
         child.remove_css_class("previous")
         child.remove_css_class("urgent")
         return GLib.SOURCE_REMOVE
 
-    def set_focused_idle(self, child: Gtk.Widget):
+    def set_focused_idle(self, child: Gtk.Widget) -> None:
         child.add_css_class("focused")
         child.set_visible(True)
         self.scroll_into_view(child)
         return GLib.SOURCE_REMOVE
 
-    def set_urgent_idle(self, child: Gtk.Widget):
+    def set_urgent_idle(self, child: Gtk.Widget) -> None:
         if child.has_css_class("urgent"):
             child.remove_css_class("urgent")
         else:
@@ -852,35 +869,31 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
             self.scroll_into_view(child)
         return GLib.SOURCE_REMOVE
 
-    def add_css_class_idle(self, child: Gtk.Widget, css_class: str):
+    def add_css_class_idle(self, child: Gtk.Widget, css_class: str) -> None:
         child.add_css_class(css_class)
         return GLib.SOURCE_REMOVE
 
 
-    def remove_css_class_idle(self, child: Gtk.Widget, css_class: str):
+    def remove_css_class_idle(self, child: Gtk.Widget, css_class: str) -> None:
         child.remove_css_class(css_class)
         return GLib.SOURCE_REMOVE
 
-    def set_name_idle(self, child: Gtk.Widget, name: str):
+    def set_name_idle(self, child: Gtk.Widget, name: str) -> None:
         child.set_name(name)
         return GLib.SOURCE_REMOVE
 
-    def set_label_idle(self, child: Gtk.Widget, label: str):
+    def set_label_idle(self, child: Gtk.Widget, label: str) -> None:
         child.set_label(label)
         return GLib.SOURCE_REMOVE
-
 
     def dispatch_ws(self,
                     name: str,
                     old_focus_name: str,
                     action: str,
-                    wsid: int) -> bool:
+                    wsid: int) -> None:
 
         child = None
-        do_add = True
         old_name = None
-        cnt = 0
-
         label = self.rewrite(name)
 
         if self.wsid_map.get(name, -1) < 0 and wsid >= 0:
@@ -895,57 +908,43 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
                 else:
                     self.wsid_map[name] = wsid
 
-        while True:
-            if child is None:
-                child = self.box.get_first_child()
-            else:
-                child = child.get_next_sibling()
+        if old_name in self.ws_button_map:
+            child = self.ws_button_map[old_name]
+            GLib.idle_add(self.set_name_idle, child, name)
+            GLib.idle_add(self.set_label_idle, child, label)
+        elif name in self.ws_button_map:
+            child = self.ws_button_map[name]
 
-            cnt += 1
+            match action:
+                case "empty":
+                    if name not in self.always_show:
+                        GLib.idle_add(self.set_empty_idle, child)
+                    else:
+                        GLib.idle_add(self.remove_css_class_idle, child, "focused")
+                    GLib.idle_add(self.remove_css_class_idle, child, "urgent")
+                case "focus":
+                    if self.cur_focus in self.ws_button_map:
+                        GLib.idle_add(self.remove_css_class_idle, self.ws_button_map[self.cur_focus], "focused")
+                        GLib.idle_add(self.add_css_class_idle, self.ws_button_map[old_focus_name], "previous")
 
-            if child is None:
-                break
+                    if self.prev_focus in self.ws_button_map:
+                        GLib.idle_add(self.remove_css_class_idle, self.ws_button_map[self.prev_focus], "previous")
 
-            child_name = child.get_name()
+                    GLib.idle_add(self.set_focused_idle, child)
 
-            if action == "focus" or child_name != self.cur_focus:
-                GLib.idle_add(self.remove_css_class_idle, child, "focused")
-
-            if child_name == old_focus_name:
-                GLib.idle_add(self.add_css_class_idle, child, "previous")
-                do_add = False
-            else:
-                GLib.idle_add(self.remove_css_class_idle, child, "previous")
-
-            if child_name == old_name:
-                GLib.idle_add(self.set_name_idle, name)
-                GLib.idle_add(self.set_label_idle, label)
-                do_add = False
-            elif child_name == name:
-                do_add = False
-                match action:
-                    case "empty":
-                        if child_name == self.cur_focus:
-                            self.cur_focus = None
-
-                        if child_name not in self.always_show:
-                            GLib.idle_add(self.set_empty_idle, child)
-                    case "focus":
-                        self.cur_focus = child_name
-                        GLib.idle_add(self.set_focused_idle, child)
-                    case "urgent":
-                        GLib.idle_add(self.set_urgent_idle, child)
-                    case _:
-                        pass
-
-        if do_add:
-            if cnt <= self.max_workspaces:
-                child = I3WorkspaceButton(name, label, self.i3_conn)
-                self.box.append(child)
-                if wsid >= 0:
-                    self.wsid_map[name] = wsid
-            else:
-                logging.error("refusing to track more than %d workspaces", self.max_workspaces)
+                    self.prev_focus, self.cur_focus = self.cur_focus, name
+                case "urgent":
+                    GLib.idle_add(self.set_urgent_idle, child)
+                case _:
+                    pass
+        elif len(self.ws_button_map) < self.max_workspaces:
+            child = I3WorkspaceButton(name, label, self.i3_conn)
+            self.box.append(child)
+            self.ws_button_map[name] = child
+            if wsid >= 0:
+                self.wsid_map[name] = wsid
+        else:
+            logging.error("refusing to track more than %d workspaces", self.max_workspaces)
 
         return GLib.SOURCE_REMOVE
 
@@ -981,10 +980,6 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
                 self.dispatch_ws(name, None, action, wsid)
 
         self.i3_conn.on(Event.WORKSPACE, _callback_workspaces)
-
-
-class BarConfigError(Exception):
-    pass
 
 
 class MehBarGUI(Gtk.ApplicationWindow):
@@ -1062,8 +1057,8 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "class": BarWidgetI3Workspaces,
             "unique": True,
             "kwargs": {
-                "always_show": ["1", "2", "3"],
-                "scroll_width": 128,
+                "always_show": ["1", "2", "3", "4"],
+                "scroll_width": 0,
                 "scroll_speed": 10,
                 "max_workspaces": 10,
             },
@@ -1083,6 +1078,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
     DEFAULT_CONFIG = {
         "widgets": {
             "start": [
+                {
+                    "type": "i3_workspaces",
+                    "rewrite": {},
+                },
                 {
                     "type": "temperature",
                     "ramp": ["\uf2cb", "\uf2c9", "\uf2c8", "\uf2c7"],
@@ -1121,10 +1120,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 },
             ],
             "center": [
-                {
-                    "type": "i3_workspaces",
-                    "rewrite": {"1": "\U000f0ca1", "2": "\U000f0ca3", "3": "\U000f0ca5"},
-                },
+
                 # {
                 #     "name": "testexec",
                 #     "class": BarWidgetExecTail,
@@ -1183,11 +1179,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
     }
 
     css = b"""
-        .bar-widget, .workspace {
+
+        window.background {
+            background: unset;
+        }
+
+
+        box {
+            background-color: #efdddd;
+        }
+
+
+        .bar-widget {
             font-family: "RobotoMono Nerd Font";
-            font-size: 11pt;
-            padding: 2px 5px 2px 5px;
-            margin: 0;
+            font-size: 12pt;
+            padding: 0px 5px 0px 5px;
         }
 
         #end {
@@ -1199,16 +1205,13 @@ class MehBarGUI(Gtk.ApplicationWindow):
         }
 
 
-        .workspace {
-            font-size: 14pt;
-        }
-
         #i3_kblayout {
             font-size: 11pt;
             outline: 1px solid;
-            outline-offset: -4px;
-            border-radius: 10px;
-            padding: 3px 10px 2px 10px;
+            outline-offset: -2px;
+            border-radius: 8px;
+            padding: 0px 8px 0px 8px;
+            margin: 1px 5px 1px 5px;
         }
 
         .workspace {
@@ -1221,6 +1224,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         .focused {
             background-color: #aaa;
+        }
+
+        .previous {
+            background-color: #daa;
         }
 
 
@@ -1259,14 +1266,19 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.main_box.set_homogeneous(True)
         self.start_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.start_box.set_halign(Gtk.Align.START)
+        self.start_box.set_valign(Gtk.Align.CENTER)
         self.center_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.center_box.set_halign(Gtk.Align.CENTER)
+        self.center_box.set_valign(Gtk.Align.CENTER)
         self.end_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.end_box.set_halign(Gtk.Align.END)
+        self.end_box.set_valign(Gtk.Align.CENTER)
 
+        self.main_box.set_valign(Gtk.Align.CENTER)
         self.main_box.append(self.start_box)
         self.main_box.append(self.center_box)
         self.main_box.append(self.end_box)
+
 
         self.set_child(self.main_box)
 
@@ -1289,7 +1301,8 @@ class MehBarGUI(Gtk.ApplicationWindow):
             raise BarConfigError("missing 'type' field in widget config")
 
         if w_type not in self.WIDGET_TYPE_MAP:
-            raise BarConfigError(f"unknown widget type: {w_type}")
+            available = ", ".join(self.WIDGET_TYPE_MAP.keys())
+            raise BarConfigError(f"unknown widget type: {w_type}. Available: {available}")
 
         w_unique = self.WIDGET_TYPE_MAP[w_type].get("unique", False)
 
@@ -1314,7 +1327,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         w_class_args = set()
 
-        for name, param in inspect.signature(w_class).parameters.items():
+        for name, param in signature(w_class).parameters.items():
 
             w_class_args.add(name)
 
@@ -1322,7 +1335,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 if name == "i3_conn":
                     _kwargs[name] = self.i3_conn
 
-                if param.default == inspect.Parameter.empty:
+                if param.default == Parameter.empty:
                     assert (
                         name in _kwargs
                     ), f"No key {name} for widget of type {w_type}"
@@ -1383,7 +1396,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         await self.run_widgets()
 
 
-class MyApp(Gtk.Application):
+class MehBar(Gtk.Application):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.win = None
@@ -1404,7 +1417,7 @@ class MyApp(Gtk.Application):
 
 
 if __name__ == "__main__":
-    app = MyApp(
+    app = MehBar(
         application_id="com.github.mehsayer.mehbar",
         flags=Gio.ApplicationFlags.FLAGS_NONE,
     )
