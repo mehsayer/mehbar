@@ -16,20 +16,7 @@ import sys
 import threading
 import time
 import logging
-
-from i3ipc import (
-    Event,
-    InputEvent,
-    ModeEvent,
-    WindowEvent,
-    WorkspaceEvent,
-    Con,
-)
-from i3ipc.aio import Connection
-from pulsectl_asyncio import PulseAsync
-
-import psutil
-import gi
+import signal
 import os
 
 LOG_LEVEL = os.getenv("MEHBAR_LOG_LEVEL", "DEBUG")
@@ -38,14 +25,41 @@ logging.basicConfig(
     format="[%(asctime)s] *%(levelname)s*: %(message)s", level=getattr(logging, LOG_LEVEL, logging.INFO)
 )
 
-# GSK_RENDERER=cairo GDK_BACKEND=wayland
+try:
+    from i3ipc import (
+        Event,
+        InputEvent,
+        ModeEvent,
+        WindowEvent,
+        WorkspaceEvent,
+        Con,
+    )
+    from i3ipc.aio import Connection
+except ImportError:
+    pass
 
+try:
+    from pulsectl_asyncio import PulseAsync
+except ImportError:
+    pass
+
+try:
+    import psutil
+except ImportError:
+    pass
+
+
+import gi
+# GSK_RENDERER=cairo GDK_BACKEND=wayland
+# logging.critical("DS")
 cdll_failed = set()
 
-for soname in ["libgtk4-layer-shell.so", "libgtk4-layer-shell.so.0"]:
+for soname in ["libgtk4-layer-shell.so.0", "libgtk4-layer-shell.so.0"]:
     try:
         CDLL(soname)
+        break
     except OSError as ex:
+
         cdll_failed.add(soname)
     else:
         cdll_failed.clear()
@@ -54,17 +68,20 @@ if cdll_failed:
     logging.critical("failed to load GTK4 layer shell library, tried: %s", ", ".join(cdll_failed))
 
     sys.exit(1)
-
 try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk, Gdk, Gio, GLib
+    from gi.repository import Gtk4LayerShell
 except ValueError as ex:
     logging.critical(ex)
     sys.exit(1)
 
-from gi.repository import Gtk, Gdk, Gio, GLib
-from gi.repository import Gtk4LayerShell
-
+try:
+    gi.require_version("Playerctl", "2.0")
+    from gi.repository import Playerctl
+except ImportError:
+    pass
 
 def overlay_dict_r(bottom: dict[Any, Any], top: dict[Any, Any], max_depth: int = 10, depth: int = 0):
     if depth > max_depth:
@@ -107,9 +124,6 @@ class BarWindgetInterface:
     def vupdate_label(self, **kwargs):
         pass
 
-    def set_hide_default(self, state: bool):
-        pass
-
     def stop(self):
         pass
 
@@ -140,7 +154,6 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         super().__init__()
 
         self._run = True
-        self._hide_default = False
         self._last_value: Any | None = None
         self.cache: dict[str, Any] = {}
         self.formatter = OptionalFormatter()
@@ -182,10 +195,6 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
 
     def stop(self):
         self._run = False
-
-    def set_hide_default(self, state: bool):
-        self._hide_default = state
-
 
     def onclick(self, button: int, action: Action):
         controller = GestureMouseClick()
@@ -568,12 +577,14 @@ class BarWidgetI3Mode(I3ListenerMixin, RewriteMixin, BarWidget):
     def __init__(self,
                  rewrite: dict[str, str],
                  label_format: str,
-                 i3_conn: Connection,):
+                 always_show: bool,
+                 i3_conn: Connection):
         super().__init__(0,
                          label_format,
                          None,
                          rewrite=rewrite,
                          i3_conn=i3_conn)
+        self.always_show = always_show
 
     async def run(self):
 
@@ -587,7 +598,7 @@ class BarWidgetI3Mode(I3ListenerMixin, RewriteMixin, BarWidget):
                 self.vupdate_label(mode=self.cache[cur_mode])
 
             self.set_visible(
-                not (self._hide_default and cur_mode == "default")
+                not (self.always_show and cur_mode == "default")
             )
 
         _dispatch_mode("default")
@@ -615,14 +626,24 @@ class BarWidgetI3Window(I3ListenerMixin, RewriteMixin, BarWidget):
         conn = await self.get_i3_conn()
 
         def _dispatch_con(con: Con):
-            if con and con.app_id is not None:
+
+            if con is not None and con:
+                win_name = None
                 if con.name is not None:
+                    win_name = con.name
+                elif con.app_id is not None:
+                    win_name = con.app_id
+
+                if win_name is not None:
                     self.set_visible(True)
-                    if self._last_value != con.name:
-                        self._last_value = con.name
-                        if con.name not in self.cache:
-                            self.cache[con.name] = self.rewrite(con.name)
-                        self.vupdate_label(title=self.cache[con.name])
+
+                    if self._last_value != win_name:
+                        self._last_value = win_name
+                        if win_name not in self.cache:
+                            self.cache[win_name] = self.rewrite(win_name)
+                        self.vupdate_label(title=self.cache[win_name])
+                else:
+                    self.set_visible(False)
             else:
                 self.set_visible(False)
 
@@ -644,8 +665,9 @@ class BarWidgetI3Window(I3ListenerMixin, RewriteMixin, BarWidget):
 
 
 class BarWidgetI3Scratchpad(I3ListenerMixin, BarWidget):
-    def __init__(self, label_format: str, i3_conn: Connection):
+    def __init__(self, label_format: str, always_show: bool, i3_conn: Connection):
         super().__init__(0, label_format, i3_conn=i3_conn)
+        self.always_show = always_show
 
     async def run(self):
 
@@ -661,7 +683,7 @@ class BarWidgetI3Scratchpad(I3ListenerMixin, BarWidget):
                         self._last_value = num
                         self.vupdate_label(count=num)
 
-            self.set_visible(not (self._hide_default and num == 0))
+            self.set_visible(not (self.always_show and num == 0))
 
         async def _callback_scratchpad(*_):
             _dispatch_scratchpad(await conn.get_tree())
@@ -787,13 +809,16 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
                  scroll_width: int,
                  scroll_speed: int,
                  max_workspaces: int,
-                 always_show: list[int | str],
+                 always_show: list[str] | None = None,
                  **kwargs):
         super().__init__(i3_conn=i3_conn, rewrite=rewrite)
 
         self.wsid_map: dict[str, int] = {}
         self.ws_button_map: dict[str, I3WorkspaceButton] = {}
-        self.always_show = [str(x) for x in always_show]
+
+        self.always_show = []
+        if always_show is not None:
+            self.always_show.extend([str(name) for name in always_show])
 
         self.max_workspaces = max(1, min(max_workspaces, self.MAX_WORKSPACES))
 
@@ -885,6 +910,7 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
     def set_label_idle(self, child: Gtk.Widget, label: str) -> None:
         child.set_label(label)
         return GLib.SOURCE_REMOVE
+
 
     def dispatch_ws(self,
                     name: str,
@@ -982,11 +1008,358 @@ class BarWidgetI3Workspaces(I3ListenerMixin,
         self.i3_conn.on(Event.WORKSPACE, _callback_workspaces)
 
 
+class PlayerctlButton(BarWidget):
+    def __init__(self, name: str, label: str, label_format: str | None = None):
+        super().__init__(0, label_format)
+
+        self.initial_label = label
+        self.set_name(name)
+        self.set_label(label)
+        self.add_css_class("playerctl-button")
+
+
+    def reset_label(self):
+        self.set_label(self.initial_label)
+        # self.onclick(1, CallableAction(self.switch_ws))
+
+
+
+class BarWidgetPlayerCtl(Gtk.Box):
+
+    MAX_SCROLL_SPEED = 100
+
+    SUPPORTED_MODULES = [
+
+                "next",
+                "play_pause",
+                "previous",
+                "seek_back",
+                "seek_forward",
+                "title",
+                "volume",
+                "time"
+
+                ]
+
+
+
+    def __init__(self, modules: list[dict[str, Any]],
+                       always_show: bool = False,
+                       tick_ms: int = 500,
+                       **kwargs):
+        super().__init__(**kwargs)
+        self.set_name("playerctl")
+
+        self.ticker_direction = 0
+
+        self.cur_total_time = 0
+
+        self.formatter = OptionalFormatter()
+
+        self.manager = Playerctl.PlayerManager()
+
+        self.player = None
+
+        self.player_ready = asyncio.Event()
+
+        self._last_time = 0.0
+
+        self._run = True
+
+        self.aio_loop = None
+
+        self.tick = min(max(tick_ms, 10), 2000) / 1000
+
+        self.always_show = always_show
+
+        self.box_title = None
+        self.btn_next = None
+        self.btn_play_pause = None
+        self.btn_previous = None
+        self.btn_previous = None
+        self.btn_seek_back = None
+        self.btn_seek_forward = None
+        self.btn_volume = None
+        self.btn_time = None
+        self.h_adj = None
+        self.label_pause = None
+        self.label_play = None
+        self.scroll_view = None
+        self.vol_labels = []
+        self.ticker = False
+
+        for module in modules:
+
+            mod_type = module.get("type")
+            if mod_type not in self.SUPPORTED_MODULES:
+                continue
+
+            match mod_type:
+                case "play_pause":
+                    if "label_play" in module and "label_pause" in module:
+                        self.label_play = module["label_play"]
+                        self.label_pause = module["label_pause"]
+                        self.btn_play_pause = PlayerctlButton("playerctl-play-pause", self.label_play)
+                        self.append(self.btn_play_pause)
+                case "next":
+                    if "label" in module:
+                        self.btn_next = PlayerctlButton("playerctl-next", module["label"])
+                        self.append(self.btn_next)
+                case "previous":
+                    if "label" in module:
+                        self.btn_previous = PlayerctlButton("playerctl-previuos", module["label"])
+                        self.append(self.btn_previous)
+                case "seek_back":
+                    if "label" in module:
+                        self.btn_seek_back = PlayerctlButton("playerctl-seek-back", module["label"])
+                        self.append(self.btn_seek_back)
+                case "seek_forward":
+                    if "label" in module:
+                        self.btn_seek_forward = PlayerctlButton("playerctl-seek-forward", module["label"])
+                        self.append(self.btn_seek_forward)
+                case "time":
+                    self.btn_time = PlayerctlButton("playerctl-time", module.get("label_empty"), module.get("label_format"))
+                    self.append(self.btn_time)
+                case "volume":
+                    if "format" in module:
+                        for vol in range(0, 101):
+                            vol_label = self.formatter.format(module["format"], volume=vol)
+                            self.vol_labels.append(vol_label)
+                        self.btn_volume = PlayerctlButton("playerctl-volume", self.vol_labels[0])
+                        self.append(self.btn_volume)
+                case "title":
+
+                    label_empty = module.get("label_empty", "")
+                    scroll_speed = module.get("scroll_speed", 10)
+                    scroll_width = module.get("scroll_width", 0)
+                    label_format = module.get("label_format")
+
+                    self.ticker = module.get("ticker", False)
+
+                    self.label_title = PlayerctlButton("playerctl-title", label_empty, label_format)
+                    self.scroll_view = Gtk.ScrolledWindow.new()
+                    self.box_title = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
+                    self.box_title.append(self.label_title)
+
+                    if scroll_width > 0:
+                        scroll_speed = max(1, min(scroll_speed, self.MAX_SCROLL_SPEED))
+                        self.scroll_view.set_min_content_width(scroll_width)
+                        self.scroll_view.set_size_request(scroll_width, -1)
+                        self.scroll_view.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+                        viewport = Gtk.Viewport.new()
+                        viewport.set_child(self.box_title)
+
+                        self.h_adj = self.scroll_view.get_hadjustment()
+
+                        def _scroll(ctrl, _, direction):
+                            self.h_adj.set_value(
+                                self.h_adj.get_value() + (direction * scroll_speed)
+                            )
+
+                        scroll_ctrl = Gtk.EventControllerScroll.new(
+                            Gtk.EventControllerScrollFlags.VERTICAL
+                        )
+
+                        scroll_ctrl.connect("scroll", _scroll)
+                        viewport.add_controller(scroll_ctrl)
+                        viewport.set_scroll_to_focus(False)
+                        self.scroll_view.set_child(viewport)
+                    else:
+                        self.scroll_view.set_propagate_natural_width(True)
+                        self.scroll_view.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+                        self.scroll_view.set_child(self.box_title)
+
+                    self.append(self.scroll_view)
+
+        self.set_visible(self.always_show)
+
+    def init_player(self, name):
+        # choose if you want to manage the player based on the name
+        # logging.debug("player appeared: %s", name.name)
+        if name.name == "spotify_player":
+
+            self.player = Playerctl.Player.new_from_name(name)
+
+            if not self.player.props.can_control:
+                raise RuntimeError("RTE")
+
+            self.player.connect('playback-status', self.on_status)
+            self.player.connect('metadata', self.on_metadata)
+            self.player.connect('volume', self.on_volume)
+            self.manager.manage_player(self.player)
+
+            self.on_status(None, self.player.props.playback_status)
+            self.on_volume(None, self.player.props.volume)
+            self.on_metadata(None, self.player.props.metadata)
+
+
+    def ticker_increment_idle(self):
+
+        if self.ticker and self.h_adj is not None:
+
+            curr_value = self.h_adj.get_value()
+
+            if (curr_value + self.h_adj.get_page_size()) >= self.h_adj.get_upper():
+                self.ticker_direction = -1
+            elif curr_value <= 1:
+                self.ticker_direction = 1
+
+            if self.ticker_direction != 0:
+                self.h_adj.set_value(curr_value + (self.ticker_direction * 10))
+
+        return GLib.SOURCE_REMOVE
+
+
+    def on_metadata(self, player, metadata):
+        self.reset_time()
+
+        keys = metadata.keys()
+
+        # logging.debug(metadata)
+
+        artist = 'Unknown Artist'
+        if 'xesam:artist' in keys and metadata['xesam:artist']:
+            artist = metadata['xesam:artist'][0]
+
+        album = 'Unknown Album'
+        if 'xesam:album' in keys and metadata['xesam:album']:
+            album = metadata['xesam:album']
+
+        title = 'Unknown Title'
+        if 'xesam:title' in keys and metadata['xesam:title']:
+            title = metadata['xesam:title']
+
+        if 'mpris:length' in keys:
+            self.cur_total_time = int(metadata['mpris:length'] / 10**6)
+
+        GLib.idle_add(self.set_title_kw_idle, dict(artist=artist, album=album, title=title))
+
+    def on_volume(self, player, volume: float):
+        vol = int(volume)
+        if self.vol_labels:
+            vol_str = self.vol_labels[vol]
+            GLib.idle_add(self.set_volume_idle, vol_str)
+
+
+    def on_name_appeared(self, manager, name):
+        logging.debug("playerctl: player name appeared: <%s>", name)
+        self.init_player(name)
+
+    def on_player_vanished(self, manager, player):
+        self.player_ready.clear()
+        self.on_status(None, Playerctl.PlaybackStatus.STOPPED)
+
+    def reset_time(self):
+
+        def _reset():
+            self._last_time = 0
+
+        if self.aio_loop is not None:
+            self.aio_loop.call_soon_threadsafe(_reset)
+
+
+    def on_status(self, player, status):
+        self.reset_time()
+
+        if status == Playerctl.PlaybackStatus.PLAYING:
+            self.set_visible(True)
+            self.player_ready.set()
+            GLib.idle_add(self.set_play_idle, False)
+        elif status == Playerctl.PlaybackStatus.PAUSED:
+            self.player_ready.clear()
+            GLib.idle_add(self.set_play_idle, True)
+        else:
+            self.set_visible(self.always_show)
+            self.player_ready.clear()
+            GLib.idle_add(self.set_title_kw_idle, None)
+            GLib.idle_add(self.set_time_kw_idle, None)
+            GLib.idle_add(self.set_volume_idle, None)
+
+
+    def set_time_kw_idle(self, kwargs: dict[str, str] | None):
+        if self.btn_time is not None:
+            if kwargs is None:
+                self.btn_time.reset_label()
+            else:
+                self.btn_time.vupdate_label(**kwargs)
+        return GLib.SOURCE_REMOVE
+
+    def set_play_idle(self, is_play: bool):
+        if self.btn_play_pause is not None:
+            if is_play:
+                self.btn_play_pause.set_label(self.label_play)
+            else:
+                self.btn_play_pause.set_label(self.label_pause)
+
+    def set_title_kw_idle(self, kwargs: dict[str, str] | None):
+        if self.label_title is not None:
+            if kwargs is None:
+                self.label_title.reset_label()
+            else:
+                self.label_title.vupdate_label(**kwargs)
+        return GLib.SOURCE_REMOVE
+
+    def set_volume_idle(self, volume_str: str | None):
+        if self.btn_volume is not None:
+            if volume_str is None:
+                self.btn_volume.reset_label()
+            else:
+                self.btn_volume.set_label(volume_str)
+        return GLib.SOURCE_REMOVE
+
+    async def watch_positon(self):
+
+        while self._run:
+            await self.player_ready.wait()
+
+            self.reset_time()
+
+            if self.player is not None:
+
+                while self.player_ready.is_set():
+                    if self.player.props.playback_status == Playerctl.PlaybackStatus.PLAYING:
+
+                        raw_sec = int(self.player.get_position() / 10**6)
+
+                        if self._last_time < raw_sec:
+                            self._last_time = raw_sec
+
+                            t_min, t_sec = divmod(raw_sec, 60)
+
+                            t_tot_min, t_tot_sec = 0, 0 # TODO: move this to on_metadata
+                            if self.cur_total_time > 0:
+                                t_tot_min, t_tot_sec = divmod(self.cur_total_time, 60)
+
+                            GLib.idle_add(self.set_time_kw_idle, dict(current=f"{t_min}:{t_sec:02d}", total=f"{t_tot_min}:{t_tot_sec:02d}"))
+
+                        GLib.idle_add(self.ticker_increment_idle)
+
+                        await asyncio.sleep(self.tick)
+            await asyncio.sleep(1)
+
+    async def run(self):
+        self.aio_loop = asyncio.get_running_loop()
+
+        self.manager.connect('name-appeared', self.on_name_appeared)
+        self.manager.connect('player-vanished', self.on_player_vanished)
+
+        for name in self.manager.props.player_names:
+            self.init_player(name)
+
+        async with asyncio.TaskGroup() as tg:
+            task = tg.create_task(self.watch_positon())
+
+    def stop(self):
+        pass
+
+
+
 class MehBarGUI(Gtk.ApplicationWindow):
 
     WIDGET_TYPE_MAP = {
         "cpu_percentage": {
             "class": BarWidgetCPUPercentage,
+            "deps": ["psutil"],
             "unique": True,
             "kwargs": {
                 "interval": 5,
@@ -1025,16 +1398,65 @@ class MehBarGUI(Gtk.ApplicationWindow):
         },
         "memory": {
             "class": BarWidgetMemoryUsage,
+            "deps": ["psutil"],
             "unique": True,
             "kwargs": {"interval": 11},
         },
         "disk": {
             "class": BarWidgetDiskUsage,
+            "deps": ["psutil"],
             "unique": False,
             "kwargs": {"interval": 60, "path": "/"},
         },
+        "playerctl": {
+            "class": BarWidgetPlayerCtl,
+            "deps": ["gi.repository/Playerctl"],
+            "unique": True,
+            "kwargs": {
+                "always_show": True,
+
+                "modules": [
+                    {
+                        "type": "previous",
+                        "label": "\U000f0664"
+                    },
+                    {
+                        "type": "seek_back",
+                        "label": "\U000f11f9"
+                    },
+                    {
+                        "type": "play_pause",
+                        "label_play": "\U000f040d",
+                        "label_pause": "\U000f03e6"
+                    },
+                    {
+                        "type": "seek_forward",
+                        "label": "\U000f11f8"
+                    },
+                    {
+                        "type": "next",
+                        "label": "\U000f0662"
+                    },
+                    {
+                        "type": "title",
+                        "label_empty": "-----",
+                        "ticker": True,
+                        "scroll_speed": 10,
+                        "scroll_width": 128,
+                        "label_format": "{artist} - {album} - {title}"
+                    },
+                    {
+                        "type": "time",
+                        "label_empty": "--:--",
+                        "label_format": "{current}/{total}"
+                    },
+
+                ],
+          },
+        },
         "pulseaudio_volume": {
             "class": BarWidgetPulseVolume,
+            "deps": ["pulsectl_asyncio/PulseAsync"],
             "unique": True,
             "kwargs": {"max_vol": 100, "vol_delta": 20, "sink_name": "@DEFAULT_SINK@"},
         },
@@ -1042,19 +1464,26 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "class": BarWidgetStatic,
             "unique": False,
         },
-        "i3_kblayout": {"class": BarWidgetI3KeyboardLayout, "unique": True},
+        "i3_kblayout": {
+            "class": BarWidgetI3KeyboardLayout,
+            "deps": ["i3ipc", "i3ipc.aio/Connection", "i3ipc/Event", "i3ipc/InputEvent", "i3ipc/Con"],
+            "unique": True
+        },
         "i3_mode": {
             "class": BarWidgetI3Mode,
+            "deps": ["i3ipc", "i3ipc.aio/Connection", "i3ipc/Event", "i3ipc/ModeEvent", "i3ipc/Con"],
             "unique": True,
-            "kwargs": {"hide_default": True},
+            "kwargs": {"always_show": True},
         },
         "i3_scratchpad": {
             "class": BarWidgetI3Scratchpad,
+            "deps": ["i3ipc", "i3ipc.aio/Connection", "i3ipc/Event", "i3ipc/WindowEvent", "i3ipc/Con"],
             "unique": True,
-            "kwargs": {"hide_default": True},
+            "kwargs": {"always_show": True},
         },
         "i3_workspaces": {
             "class": BarWidgetI3Workspaces,
+            "deps": ["i3ipc", "i3ipc.aio/Connection", "i3ipc/Event", "i3ipc/WorkspaceEvent", "i3ipc/Con"],
             "unique": True,
             "kwargs": {
                 "always_show": ["1", "2", "3", "4"],
@@ -1065,11 +1494,13 @@ class MehBarGUI(Gtk.ApplicationWindow):
         },
         "i3_window": {
             "class": BarWidgetI3Window,
+            "deps": ["i3ipc", "i3ipc.aio/Connection", "i3ipc/Event", "i3ipc/WindowEvent", "i3ipc/Con"],
             "unique": True,
-            "kwargs": {"hide_default": True},
+            "kwargs": {"always_show": True},
         },
         "wifi_signal": {
             "class": BarWidgetWifiSignal,
+            "deps": [],
             "unique": True,
             "kwargs": {"interval": 10},
         },
@@ -1120,6 +1551,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 },
             ],
             "center": [
+             {
+                    "type": "playerctl",
+
+                },
 
                 # {
                 #     "name": "testexec",
@@ -1230,12 +1665,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
             background-color: #daa;
         }
 
+        #playerctl {
+            background-color: #fee;
+        }
 
+        #playerctl-previuos, #playerctl-play-pause, #playerctl-next {
+            padding: 0 6px 0 6px;
+        }
 
         """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+
+        homo = True
 
         self.i3_conn = None
         self.widget_list = []
@@ -1263,17 +1707,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
         )
 
         self.main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.main_box.set_homogeneous(True)
+        self.main_box.set_homogeneous(homo) # TODO: Make configurable
         self.start_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.start_box.set_halign(Gtk.Align.START)
         self.start_box.set_valign(Gtk.Align.CENTER)
         self.center_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.center_box.set_halign(Gtk.Align.CENTER)
         self.center_box.set_valign(Gtk.Align.CENTER)
+        if homo:
+            self.center_box.set_halign(Gtk.Align.CENTER)
+        else:
+            self.center_box.set_halign(Gtk.Align.START)
+            self.center_box.set_hexpand(True)
+
         self.end_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.end_box.set_halign(Gtk.Align.END)
         self.end_box.set_valign(Gtk.Align.CENTER)
-
         self.main_box.set_valign(Gtk.Align.CENTER)
         self.main_box.append(self.start_box)
         self.main_box.append(self.center_box)
@@ -1300,16 +1748,32 @@ class MehBarGUI(Gtk.ApplicationWindow):
         if (w_type := kwargs.pop("type", None)) is None:
             raise BarConfigError("missing 'type' field in widget config")
 
+        missing_deps = set()
+        for dep in self.WIDGET_TYPE_MAP[w_type].get("deps", []):
+            split = dep.split("/")
+            if len(split) == 2:
+                mod_name, obj_name = split
+                if mod_name not in sys.modules or not hasattr(sys.modules[mod_name], obj_name):
+                    missing_deps.add(dep)
+            elif len(split) == 1:
+                if split[0] not in sys.modules:
+                     missing_deps.add(dep)
+
+        if missing_deps:
+            raise BarConfigError(f"missing dependencies: {', '.join(missing_deps)}")
+
         if w_type not in self.WIDGET_TYPE_MAP:
             available = ", ".join(self.WIDGET_TYPE_MAP.keys())
             raise BarConfigError(f"unknown widget type: {w_type}. Available: {available}")
+
 
         w_unique = self.WIDGET_TYPE_MAP[w_type].get("unique", False)
 
         if w_unique:
             if w_type in self._unique_widget_types:
-                raise BarConfigError(f"widget {w_type} must be unique")
+                raise BarConfigError(f"windget of type '{w_type}' must be unique")
             self._unique_widget_types.add(w_type)
+
 
         w_class: Callable = self.WIDGET_TYPE_MAP[w_type]["class"]
 
@@ -1321,7 +1785,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         )
         overlay_dict_r(_kwargs, kwargs)
 
-        w_hide_default = _kwargs.pop("hide_default", False)
         w_max_width = _kwargs.pop("max_width", 0)
         w_width = _kwargs.pop("width", 0)
 
@@ -1353,7 +1816,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         del_args.clear()
 
         if _kwargs.get("interval", 1) < 1:
-            raise BarConfigError("CCVVD")
+            raise BarConfigError("the value of 'interval' field in widget config must not be less than 1")
 
         widget = w_class(**_kwargs)
 
@@ -1371,23 +1834,41 @@ class MehBarGUI(Gtk.ApplicationWindow):
         if w_max_width > 0:
             widget.set_max_width_chars(w_max_width)
 
-        widget.set_hide_default(w_hide_default)
         return widget
 
     def init_widgets(self):
         for section in ["start", "center", "end"]:
             box = getattr(self, f"{section}_box")
-            box.set_name(section)
 
-            for kwargs in self.DEFAULT_CONFIG["widgets"][section]:
-                widget = self.new_widget_for(**kwargs)
-                self.widget_list.append(widget)
-                box.append(widget)
+            if section in self.DEFAULT_CONFIG["widgets"]:
+                for kwargs in self.DEFAULT_CONFIG["widgets"][section]:
+                    try:
+                        widget = self.new_widget_for(**kwargs)
+                    except BarConfigError as ex:
+                        w_type = kwargs.get("type", "unknown")
+                        i_id = kwargs.get("id", "unknown")
+                        logging.error("disabling widget of type '%s', ID '%s', reason: %s", w_type, i_id, ex)
+                    else:
+                        self.widget_list.append(widget)
+                        box.append(widget)
+            else:
+                box.set_visible(False)
+
+    async def windget_runner(self, widget: Gtk.Widget, name: str | None = None):
+        try:
+            await widget.run()
+        except Exception as ex:
+            widget.stop()
+            widget.set_visible(False)
+            logging.error("disabling widget: %s, reason: runtime error: %s", name, ex)
+            # raise
+
 
     async def run_widgets(self):
         async with asyncio.TaskGroup() as grp:
             for widget in self.widget_list:
-                task = grp.create_task(widget.run())
+                name = widget.get_name()
+                task = grp.create_task(self.windget_runner(widget, name), name=name)
                 self.task_ref_set.add(task)
                 task.add_done_callback(self.task_ref_set.discard)
 
@@ -1421,4 +1902,5 @@ if __name__ == "__main__":
         application_id="com.github.mehsayer.mehbar",
         flags=Gio.ApplicationFlags.FLAGS_NONE,
     )
+    # GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, app.quit)
     app.run([])
