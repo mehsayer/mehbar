@@ -13,3 +13,10 @@ from mehbar._widgets._pulse_volume import BarWidgetPulseVolume
 from mehbar._widgets._static import BarWidgetStatic
 from mehbar._widgets._temperature import BarWidgetTemperature
 from mehbar._widgets._wifi import BarWidgetWifiSignal
+from mehbar._widgets._fan_speed import BarWidgetFanSpeed
+from mehbar._widgets._wired import BarWidgetWired
+from mehbar._widgets._network_rate import BarWidgetNetworkRate
+from mehbar._widgets._session import BarWidgetSession
+from mehbar._widgets._battery import BarWidgetBattery
+from mehbar._widgets._backlight import BarWidgetBacklight
+

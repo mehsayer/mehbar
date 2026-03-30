@@ -54,6 +54,7 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
 
         self._run = True
         self._last_value: Any | None = None
+        self._last_text: str | None = None
         self.cache: dict[str, Any] = {}
         self.formatter = OptionalFormatter()
         self.interval = max(int(interval), 0)
@@ -78,7 +79,7 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         """Calls Widget.set_label and returns False, so that it can be removed
         from event sources.
         """
-        super().set_label(label)
+        super().set_label(label.strip())
         return GLib.SOURCE_REMOVE
 
     def _onclick(self, button: int, action: Action):
@@ -89,7 +90,7 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
 
     def _onscroll(self, action_up: Action, action_down: Action):
 
-        def _scroll(*_, dy: float):
+        def _scroll(x: float, dx: float, dy: float):
             if dy > 0:
                 action_up.run()
             else:
@@ -101,14 +102,18 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         controller.connect("scroll", _scroll)
         self.add_controller(controller)
 
+
+    # TODO: rename to vsformat
     def vformat_label(self, **kwargs):
         return self.formatter.format(self.label_format, **kwargs)
 
     def set_label_idle(self, label: str):
-        GLib.idle_add(self._set_label_idle, label)
+        if self._last_text != label:
+            self._last_text = label
+            GLib.idle_add(self._set_label_idle, label)
 
     def format_label_idle(self, **kwargs):
-        self.set_label_idle(self.vformat_label(**kwargs))
+        self.set_label_idle(self.vformat_label(**kwargs).strip())
 
     def onclick_call(self, button: int, func: Callable, *args, **kwargs):
         self._onclick(button, CallableAction(func, *args, **kwargs))

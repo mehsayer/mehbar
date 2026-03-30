@@ -14,7 +14,6 @@ import threading
 
 EXC_INFO = os.getenv("MEHBAR_LOG_EXCEPTIONS") is not None
 
-
 import gi
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
@@ -70,6 +69,12 @@ from mehbar._widgets import (
     BarWidgetI3Workspaces,
     BarWidgetI3KeyboardLayout,
     BarWidgetWifiSignal,
+    BarWidgetWired,
+    BarWidgetFanSpeed,
+    BarWidgetNetworkRate,
+    BarWidgetSession,
+    BarWidgetBattery,
+    BarWidgetBacklight
 )
 from mehbar.widgets import BarWidget
 from mehbar.exceptions import BarConfigError
@@ -104,7 +109,16 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "kwargs": {
                 "interval": 5,
                 "max_temp": 100,
-                "zone": 0,
+                "source": 0,
+            },
+        },
+        "fan_speed": {
+            "class": BarWidgetFanSpeed,
+            "unique": False,
+            "kwargs": {
+                "interval": 5,
+                "max_speed": 5000,
+                "source": None,
             },
         },
         "datetime": {
@@ -133,13 +147,30 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "class": BarWidgetMemoryUsage,
             "deps": ["psutil"],
             "unique": True,
-            "kwargs": {"interval": 11},
+            "kwargs": {"interval": 12},
         },
         "disk": {
             "class": BarWidgetDiskUsage,
             "deps": ["psutil"],
             "unique": False,
             "kwargs": {"interval": 60, "path": "/"},
+        },
+        "session": {
+            "class": BarWidgetSession,
+            "deps": ["psutil"],
+            "unique": False,
+            "kwargs": {"interval": 5},
+        },
+        "battery": {
+            "class": BarWidgetBattery,
+            "deps": ["psutil"],
+            "unique": False,
+            "kwargs": {"interval": 5},
+        },
+        "backlight": {
+            "class": BarWidgetBacklight,
+            "unique": False,
+            "kwargs": {"interval": 5, "driver": "acpi", "step": 10},
         },
         "playerctl": {
             "class": BarWidgetPlayerCtl,
@@ -255,6 +286,25 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "unique": True,
             "kwargs": {"interval": 1},
         },
+        "wired": {
+            "class": BarWidgetWired,
+            "deps": [],
+            "unique": True,
+            "kwargs": {"interval": 1},
+        },
+        "network_rate": {
+            "class": BarWidgetNetworkRate,
+            "deps": [],
+            "unique": False,
+            "kwargs": {
+                "interval": 1,
+                "conv_map": {
+                    "Kb/s":  1024,
+                    "Mb/s":  1024 ** 2,
+                    "b/s":  1
+                }
+            },
+        },
     }
 
     DEFAULT_CONFIG = {
@@ -267,7 +317,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 {
                     "type": "temperature",
                     "ramp": ["\uf2cb", "\uf2c9", "\uf2c8", "\uf2c7"],
-                    "label_format": "{ramp} {celsius}\u00b0C",
+                    "label_format": "{ramp} {temp}\u00b0C",
                 },
                 {
                     "type": "cpu_percentage",
@@ -303,6 +353,23 @@ class MehBarGUI(Gtk.ApplicationWindow):
             ],
             "center": [
                 {"type": "playerctl", "player_names": ["spotify_player", "firefox"]},
+                {"type": "backlight", "device": 13, "label_format": "{level}% {ramp}", "ramp": ["A", "B", "C"] }
+                # {
+                #     "type": "battery",
+                #     "label_format": "{ramp} {percent}% {timeleft}",
+                #     "interval": 1,
+                #     "ramp": ["\U000f125e",
+                #             "\U000f008e",
+                #             "\U000f089f",
+                #             "\U000f007b",
+                #             "\U000f0086",
+                #             "\U000f007d",
+                #             "\U000f0088",
+                #             "\U000f007f",
+                #             "\U000f0089", "\U000f0081", "\U000f008a", "\U000f0079", "\U000f0085"
+
+                #             ]
+                # },
             ],
             "end": [
                 {
@@ -313,6 +380,17 @@ class MehBarGUI(Gtk.ApplicationWindow):
                         "(?i)ukrainian.*": "UA",
                         "(?i)german.*": "DE",
                     },
+                },
+                 {
+                    "type": "wired",
+                    "iface": "eth0",
+                    "ramp": [
+                        "II",
+                        "IA",
+                        "AA",
+                    ],
+                    "backend": "unmanaged",
+                    "label_format": "{ipv4} {ramp}",
                 },
                 {
                     "type": "wifi",
@@ -326,22 +404,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
                     "backend": "iwd",
                     "label_format": "{ramp} {ssid} {percentage}%",
                 },
-                {
-                    "type": "pulseaudio_volume",
-                    "ramp": [
-                        "\U000f075f",
-                        "\U000f057f",
-                        "\U000f0580",
-                        "\U000f0580",
-                        "\U000f057e",
-                    ],
-                    "label_format": "{ramp} {percent}%",
-                },
-                {
-                    "type": "datetime",
-                    "datetime_format": "%H:%M",
-                    "label_format": "\U000f0150 {datetime}",
-                },
+                # {
+                #     "type": "pulseaudio_volume",
+                #     "ramp": [
+                #         "\U000f075f",
+                #         "\U000f057f",
+                #         "\U000f0580",
+                #         "\U000f0580",
+                #         "\U000f057e",
+                #     ],
+                #     "label_format": "{ramp} {percent}%",
+                # },
+                # {
+                #     "type": "datetime",
+                #     "label_format": "\U000f0150 {datetime:%H:%M}",
+                # },
             ],
         }
     }
@@ -357,7 +434,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
             background-color: #efdddd;
         }
 
-
         .bar-widget {
             font-family: "RobotoMono Nerd Font";
             font-size: 12pt;
@@ -371,7 +447,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         #start {
             padding-left: 8px;
         }
-
 
         #i3_kblayout {
             font-size: 11pt;
@@ -589,6 +664,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             logging.error(
                 "disabling widget: %s, reason: %s", name, ex, exc_info=EXC_INFO
             )
+            raise
 
     async def run_widgets(self):
         async with asyncio.TaskGroup() as grp:
@@ -601,6 +677,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
     async def init_and_run_widgets(self):
         self.init_widgets()
         await self.run_widgets()
+
 
 
 class MehBar(Gtk.Application):

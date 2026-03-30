@@ -39,6 +39,8 @@ class BarWidgetPulseVolume(BarWidget):
         self.onclick_call(3, self.action_mute)
         self.onscroll_call(self.action_volume_down, self.action_volume_up)
 
+        # FIXME: replace all this with functools.partialmethod
+
 
     def action_volume_up(self):
         if self.aio_loop is not None:
@@ -62,7 +64,7 @@ class BarWidgetPulseVolume(BarWidget):
             self.sink_action_queue.put_nowait((action, value))
 
 
-    async def _listen_sink_events(self, handle: PulseAsync):
+    async def _listen(self, handle: PulseAsync):
 
         sink_idx = (await handle.get_sink_by_name(self.sink_name)).index
 
@@ -85,7 +87,7 @@ class BarWidgetPulseVolume(BarWidget):
                 await _update_volume_label(handle)
 
 
-    async def _consume_user_events(self, handle: PulseAsync):
+    async def _consume(self, handle: PulseAsync):
 
         sink = await handle.get_sink_by_name(self.sink_name)
 
@@ -107,5 +109,5 @@ class BarWidgetPulseVolume(BarWidget):
 
         async with PulseAsync("poll-volume") as pulse:
             async with asyncio.TaskGroup() as grp:
-                tlisten = grp.create_task(self._listen_sink_events(pulse))
-                tconsume = grp.create_task(self._consume_user_events(pulse))
+                tlisten = grp.create_task(self._listen(pulse))
+                tconsume = grp.create_task(self._consume(pulse))
