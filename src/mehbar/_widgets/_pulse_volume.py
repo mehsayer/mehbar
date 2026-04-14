@@ -1,15 +1,23 @@
 from pulsectl_asyncio import PulseAsync
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 import asyncio
+import enum
+from functools import partial
 
-class BarWidgetPulseVolume(BarWidget):
+class SinkAction(enum.IntEnum):
+    VOLUME = 0
+    MUTE = 1
 
-    def __init__(self,
-                 sink_name: int,
-                 max_vol: int,
-                 vol_delta: int,
-                 label_format: str,
-                 ramp: list[str] | None = None):
+
+class WidgetPulseVolume(Widget):
+    def __init__(
+        self,
+        sink_name: int,
+        max_vol: int,
+        vol_delta: int,
+        label_format: str,
+        ramp: list[str] | None = None,
+    ):
         super().__init__(0, label_format, ramp)
         self.sink_name = sink_name
         self.max_vol = max(min(max_vol, 200), 20)
@@ -31,38 +39,32 @@ class BarWidgetPulseVolume(BarWidget):
                 unmuted = ramp[1:][ramp_idx]
                 muted = ramp[0]
 
-            self.results[0].append(self.vformat_label(percent=vol,
-                                                      ramp=unmuted))
-            self.results[1].append(self.vformat_label(percent=vol,
-                                                      ramp=muted))
+            self.results[0].append(self.vformat_label(percent=vol, ramp=unmuted))
+            self.results[1].append(self.vformat_label(percent=vol, ramp=muted))
 
-        self.onclick_call(3, self.action_mute)
-        self.onscroll_call(self.action_volume_down, self.action_volume_up)
+        self.onclick_call(
+            3, partial(self.call_threadsafe, self._sink_action, SinkAction.MUTE, 0)
+        )
 
-        # FIXME: replace all this with functools.partialmethod
-
-
-    def action_volume_up(self):
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(self._sink_action,
-                                               SinkAction.VOLUME,
-                                               self.vol_delta)
-
-    def action_volume_down(self):
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(self._sink_action,
-                                               SinkAction.VOLUME,
-                                               -self.vol_delta)
-
-    def action_mute(self, *args):
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(self._sink_action,
-                                               SinkAction.MUTE, 0)
+        self.onscroll_call(
+            partial(
+                self.call_threadsafe,
+                self._sink_action,
+                SinkAction.VOLUME,
+                -self.vol_delta,
+            ),
+            partial(
+                self.call_threadsafe,
+                self._sink_action,
+                SinkAction.VOLUME,
+                self.vol_delta,
+            ),
+        )
 
     def _sink_action(self, action: SinkAction, value: int):
+
         if not self.sink_action_queue.full():
             self.sink_action_queue.put_nowait((action, value))
-
 
     async def _listen(self, handle: PulseAsync):
 
@@ -86,7 +88,6 @@ class BarWidgetPulseVolume(BarWidget):
             if event.index == sink_idx and event.t == "change":
                 await _update_volume_label(handle)
 
-
     async def _consume(self, handle: PulseAsync):
 
         sink = await handle.get_sink_by_name(self.sink_name)
@@ -102,7 +103,6 @@ class BarWidgetPulseVolume(BarWidget):
                     await asyncio.sleep(0.1)
             elif action == SinkAction.MUTE:
                 await handle.mute(sink, sink.mute == 0)
-
 
     async def run(self):
         self.aio_loop = asyncio.get_running_loop()

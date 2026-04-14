@@ -1,8 +1,8 @@
-from mehbar.widgets import BarWidget, RewriteMixin, I3ListenerMixin
+from mehbar.widgets import Widget, RewriteMixin, I3ListenerMixin
 from i3ipc.aio import Connection
 from i3ipc import Event
 
-class BarWidgetI3Scratchpad(I3ListenerMixin, BarWidget):
+class WidgetI3Scratchpad(I3ListenerMixin, Widget):
     def __init__(self, label_format: str, always_show: bool, i3_conn: Connection):
         super().__init__(0, label_format, i3_conn=i3_conn)
         self.always_show = always_show

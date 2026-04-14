@@ -1,7 +1,7 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 
 
-class BarWidgetExecTail(BarWidget):
+class WidgetExecTail(Widget):
 
     def __init__(self, label_format: str, cmdline: list[str], max_lps: int):
         super().__init__(0, label_format)
@@ -51,7 +51,7 @@ class BarWidgetExecTail(BarWidget):
         super().stop()
 
 
-class BarWidgetExecRepeat(BarWidget):
+class WidgetExecRepeat(Widget):
     def __init__(
         self,
         interval: int,

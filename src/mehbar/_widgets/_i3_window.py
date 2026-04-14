@@ -1,8 +1,8 @@
-from mehbar.widgets import BarWidget, RewriteMixin, I3ListenerMixin
+from mehbar.widgets import Widget, RewriteMixin, I3ListenerMixin
 from i3ipc.aio import Connection
 from i3ipc import Event
 
-class BarWidgetI3Window(I3ListenerMixin, RewriteMixin, BarWidget):
+class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
 
     def __init__(self,
                  rewrite: dict[str, str],

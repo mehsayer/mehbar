@@ -1,11 +1,11 @@
-from mehbar.widgets import BarWidget, BarWindgetInterface, RewriteMixin, I3ListenerMixin
+from mehbar.widgets import Widget, BarWindgetInterface, RewriteMixin, I3ListenerMixin
 from gi.repository import Gtk, GLib
 from itertools import compress
 from i3ipc.aio import Connection
 from i3ipc import Event
 import asyncio
 
-class I3WorkspaceButton(I3ListenerMixin, BarWidget):
+class I3WorkspaceButton(I3ListenerMixin, Widget):
     def __init__(self, name: str, label: str, i3_conn: Connection):
         super().__init__(0, None, i3_conn=i3_conn)
         self.set_name(name)
@@ -24,7 +24,7 @@ class I3WorkspaceButton(I3ListenerMixin, BarWidget):
                                            self._switch_ws_async(name))
 
 
-class BarWidgetI3Workspaces(I3ListenerMixin,
+class WidgetI3Workspaces(I3ListenerMixin,
                             RewriteMixin,
                             Gtk.ScrolledWindow,
                             BarWindgetInterface):

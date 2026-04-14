@@ -6,10 +6,10 @@ from gi.repository import GLib, Gtk
 from gi.repository import Playerctl
 
 from mehbar.tools import OptionalFormatter
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 
 
-class PlayerctlButton(BarWidget):
+class PlayerctlButton(Widget):
     def __init__(self, name: str, label: str, label_format: str | None = None):
         super().__init__(0, label_format)
 
@@ -25,7 +25,7 @@ class PlayerctlButton(BarWidget):
         raise NotImplementedError()
 
 
-class BarWidgetPlayerCtl(Gtk.Box):
+class WidgetPlayerCtl(Gtk.Box):
 
     MAX_SCROLL_SPEED = 100
     MIN_SCROLL_SPEED = 1

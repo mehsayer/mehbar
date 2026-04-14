@@ -42,7 +42,7 @@ class BarWindgetInterface:
         pass
 
 
-class BarWidget(BarWindgetInterface, Gtk.Label):
+class Widget(BarWindgetInterface, Gtk.Label):
 
     def __init__(
         self,
@@ -53,6 +53,7 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         super().__init__()
 
         self._run = True
+        self.aio_loop = None
         self._last_value: Any | None = None
         self._last_text: str | None = None
         self.cache: dict[str, Any] = {}
@@ -68,6 +69,9 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
         self.add_css_class("bar-widget")
 
     async def run(self):
+
+        self.aio_loop = asyncio.get_running_loop()
+
         self.update()
 
         if self.interval > 0:
@@ -120,6 +124,11 @@ class BarWidget(BarWindgetInterface, Gtk.Label):
 
     def onscroll_call(self, func_up: Callable, func_down: Callable):
         self._onscroll(CallableAction(func_up), CallableAction(func_down))
+
+
+    def call_threadsafe(self, func: Callable, *args):
+        if self.aio_loop is not None:
+            self.aio_loop.call_soon_threadsafe(func, *args)
 
     def update(self):
         raise NotImplementedError()

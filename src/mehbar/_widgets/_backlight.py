@@ -1,11 +1,11 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 from mehbar.exceptions import BarConfigError
 
 from mehbar._internals import BacklightDDCCI, BacklightInterface, BacklightACPI
 from functools import partial
 import asyncio
 
-class BarWidgetBacklight(BarWidget):
+class WidgetBacklight(Widget):
 
     DRIVERS = {
         "acpi": BacklightACPI,

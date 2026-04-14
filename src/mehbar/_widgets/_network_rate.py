@@ -1,9 +1,9 @@
 import psutil
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 from operator import itemgetter
 import time
 
-class BarWidgetNetworkRate(BarWidget):
+class WidgetNetworkRate(Widget):
 
     def __init__(self, interval: int, iface: str, label_format: str, conv_map: dict[int, str]):
         super().__init__(interval, label_format)

@@ -1,7 +1,7 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 import psutil
 
-class BarWidgetCPUPercentage(BarWidget):
+class WidgetCPUPercentage(Widget):
     def update(self):
         percentage = round(psutil.cpu_percent())
 

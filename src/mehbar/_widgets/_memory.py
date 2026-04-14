@@ -1,7 +1,7 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 import psutil
 
-class BarWidgetMemoryUsage(BarWidget):
+class WidgetMemoryUsage(Widget):
     def update(self):
         vmem = psutil.virtual_memory()
 

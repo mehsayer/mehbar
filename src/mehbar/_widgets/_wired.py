@@ -7,7 +7,7 @@ import psutil
 
 from gi.repository import Gio
 from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 
 from mehbar._internals import DBusFacade
 
@@ -261,7 +261,7 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
         return WiredInfo(iface, name, pwrd, connd, hwaddr, ipv4, ipv6)
 
 
-class BarWidgetWired(BarWidget):
+class WidgetWired(Widget):
 
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,

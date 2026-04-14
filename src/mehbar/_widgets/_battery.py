@@ -1,11 +1,11 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 from mehbar.exceptions import CapabilityError
 import psutil
 from itertools import batched
 from mehbar.tools import FormattableTimeDelta
 
 
-class BarWidgetBattery(BarWidget):
+class WidgetBattery(Widget):
 
     MAX_CHARGE=100
 

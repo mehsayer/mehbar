@@ -7,7 +7,7 @@ import psutil
 
 from gi.repository import Gio
 from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 
 from mehbar._internals import DBusFacade
 
@@ -410,7 +410,7 @@ class ConnManBackend(DBusFacade, WifiInfoQuery):
         return WifiInfo(iface, ssid, None, pcnt, hwaddr, security, ipv4, ipv6)
 
 
-class BarWidgetWifiSignal(BarWidget):
+class WidgetWifiSignal(Widget):
 
     MAX_SIGNAL = 100
 

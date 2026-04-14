@@ -6,7 +6,6 @@ from gi.repository import Gio, GLib
 
 
 class DBusFacade:
-
     FLAGS_NOSIG = (
         Gio.DBusProxyFlags.DO_NOT_CONNECT_SIGNALS | Gio.DBusProxyFlags.DO_NOT_AUTO_START
     )

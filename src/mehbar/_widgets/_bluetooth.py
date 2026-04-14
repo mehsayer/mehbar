@@ -5,7 +5,7 @@ import enum
 
 from gi.repository import Gio
 from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 
 from mehbar._internals import DBusFacade
 
@@ -53,7 +53,7 @@ class BluezBackend(DBusFacade):
 
         return ret
 
-class BarWidgetBluetooth(BarWidget):
+class WidgetBluetooth(Widget):
 
     def __init__(self,
         interval: int,

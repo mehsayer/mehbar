@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 from typing import Any
 from collections.abc import Callable
 from ctypes import CDLL
@@ -17,15 +18,14 @@ EXC_INFO = os.getenv("MEHBAR_LOG_EXCEPTIONS") is not None
 import gi
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
-# logging.critical("DS")
+
 cdll_failed = set()
 
 for soname in ["libgtk4-layer-shell.so.0", "libgtk4-layer-shell.so.0"]:
     try:
         CDLL(soname)
         break
-    except OSError as ex:
-
+    except OSError:
         cdll_failed.add(soname)
     else:
         cdll_failed.clear()
@@ -41,7 +41,7 @@ try:
     gi.require_version("Gtk4LayerShell", "1.0")
     from gi.repository import Gtk, Gdk, Gio, GLib
     from gi.repository import Gtk4LayerShell
-except ValueError as ex:
+except ValueError:
     logging.critical("failed to select required GTK4 version", exc_info=EXC_INFO)
     sys.exit(1)
 
@@ -52,34 +52,37 @@ except ImportError:
     logging.critical("failed to select required Playerctl version", exc_info=EXC_INFO)
     sys.exit(1)
 
+
 from mehbar._widgets import (
-    BarWidgetCPUPercentage,
-    BarWidgetTemperature,
-    BarWidgetDateTime,
-    BarWidgetStatic,
-    BarWidgetExecTail,
-    BarWidgetExecRepeat,
-    BarWidgetMemoryUsage,
-    BarWidgetPlayerCtl,
-    BarWidgetPulseVolume,
-    BarWidgetDiskUsage,
-    BarWidgetI3Mode,
-    BarWidgetI3Window,
-    BarWidgetI3Scratchpad,
-    BarWidgetI3Workspaces,
-    BarWidgetI3KeyboardLayout,
-    BarWidgetWifiSignal,
-    BarWidgetWired,
-    BarWidgetFanSpeed,
-    BarWidgetNetworkRate,
-    BarWidgetSession,
-    BarWidgetBattery,
-    BarWidgetBacklight,
-    BarWidgetBluetooth
+    WidgetCPUPercentage,
+    WidgetTemperature,
+    WidgetDateTime,
+    WidgetStatic,
+    WidgetExecTail,
+    WidgetExecRepeat,
+    WidgetMemoryUsage,
+    WidgetPlayerCtl,
+    WidgetPulseVolume,
+    WidgetDiskUsage,
+    WidgetI3Mode,
+    WidgetI3Window,
+    WidgetI3Scratchpad,
+    WidgetI3Workspaces,
+    WidgetI3KeyboardLayout,
+    WidgetWifiSignal,
+    WidgetWired,
+    WidgetFanSpeed,
+    WidgetNetworkRate,
+    WidgetSession,
+    WidgetBattery,
+    WidgetBacklight,
+    WidgetBluetooth,
 )
-from mehbar.widgets import BarWidget
+
+from mehbar.widgets import Widget
 from mehbar.exceptions import BarConfigError
 from mehbar.tools import overlay_dict_r
+
 
 
 def get_primary_mon_width() -> int:
@@ -94,10 +97,9 @@ def get_primary_mon_width() -> int:
 
 
 class MehBarGUI(Gtk.ApplicationWindow):
-
     WIDGET_TYPE_MAP = {
         "cpu_percentage": {
-            "class": BarWidgetCPUPercentage,
+            "class": WidgetCPUPercentage,
             "deps": ["psutil"],
             "unique": True,
             "kwargs": {
@@ -105,7 +107,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "temperature": {
-            "class": BarWidgetTemperature,
+            "class": WidgetTemperature,
             "unique": False,
             "kwargs": {
                 "interval": 5,
@@ -114,7 +116,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "fan_speed": {
-            "class": BarWidgetFanSpeed,
+            "class": WidgetFanSpeed,
             "unique": False,
             "kwargs": {
                 "interval": 5,
@@ -123,14 +125,14 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "datetime": {
-            "class": BarWidgetDateTime,
+            "class": WidgetDateTime,
             "unique": False,
             "kwargs": {
                 "interval": 10,
             },
         },
         "exec_repeat": {
-            "class": BarWidgetExecRepeat,
+            "class": WidgetExecRepeat,
             "unique": False,
             "kwargs": {
                 "interval": 5,
@@ -138,48 +140,48 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "exec_tail": {
-            "class": BarWidgetExecTail,
+            "class": WidgetExecTail,
             "unique": False,
             "kwargs": {
                 "max_lps": 5,
             },
         },
         "memory": {
-            "class": BarWidgetMemoryUsage,
+            "class": WidgetMemoryUsage,
             "deps": ["psutil"],
             "unique": True,
             "kwargs": {"interval": 12},
         },
         "disk": {
-            "class": BarWidgetDiskUsage,
+            "class": WidgetDiskUsage,
             "deps": ["psutil"],
             "unique": False,
             "kwargs": {"interval": 60, "path": "/"},
         },
         "session": {
-            "class": BarWidgetSession,
+            "class": WidgetSession,
             "deps": ["psutil"],
             "unique": False,
             "kwargs": {"interval": 5},
         },
         "battery": {
-            "class": BarWidgetBattery,
+            "class": WidgetBattery,
             "deps": ["psutil"],
             "unique": False,
             "kwargs": {"interval": 5},
         },
         "backlight": {
-            "class": BarWidgetBacklight,
+            "class": WidgetBacklight,
             "unique": False,
             "kwargs": {"interval": 5, "driver": "acpi", "step": 10},
         },
         "bluetooth": {
-            "class": BarWidgetBluetooth,
+            "class": WidgetBluetooth,
             "unique": True,
             "kwargs": {"interval": 5},
         },
         "playerctl": {
-            "class": BarWidgetPlayerCtl,
+            "class": WidgetPlayerCtl,
             "deps": ["gi.repository/Playerctl"],
             "unique": True,
             "kwargs": {
@@ -213,17 +215,17 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "pulseaudio_volume": {
-            "class": BarWidgetPulseVolume,
+            "class": WidgetPulseVolume,
             "deps": ["pulsectl_asyncio/PulseAsync"],
             "unique": True,
             "kwargs": {"max_vol": 100, "vol_delta": 20, "sink_name": "@DEFAULT_SINK@"},
         },
         "static": {
-            "class": BarWidgetStatic,
+            "class": WidgetStatic,
             "unique": False,
         },
         "i3_kblayout": {
-            "class": BarWidgetI3KeyboardLayout,
+            "class": WidgetI3KeyboardLayout,
             "deps": [
                 "i3ipc",
                 "i3ipc.aio/Connection",
@@ -234,7 +236,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "unique": True,
         },
         "i3_mode": {
-            "class": BarWidgetI3Mode,
+            "class": WidgetI3Mode,
             "deps": [
                 "i3ipc",
                 "i3ipc.aio/Connection",
@@ -246,7 +248,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "kwargs": {"always_show": True},
         },
         "i3_scratchpad": {
-            "class": BarWidgetI3Scratchpad,
+            "class": WidgetI3Scratchpad,
             "deps": [
                 "i3ipc",
                 "i3ipc.aio/Connection",
@@ -258,7 +260,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "kwargs": {"always_show": True},
         },
         "i3_workspaces": {
-            "class": BarWidgetI3Workspaces,
+            "class": WidgetI3Workspaces,
             "deps": [
                 "i3ipc",
                 "i3ipc.aio/Connection",
@@ -275,7 +277,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             },
         },
         "i3_window": {
-            "class": BarWidgetI3Window,
+            "class": WidgetI3Window,
             "deps": [
                 "i3ipc",
                 "i3ipc.aio/Connection",
@@ -287,28 +289,24 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "kwargs": {"always_show": True},
         },
         "wifi": {
-            "class": BarWidgetWifiSignal,
+            "class": WidgetWifiSignal,
             "deps": [],
             "unique": True,
             "kwargs": {"interval": 1},
         },
         "wired": {
-            "class": BarWidgetWired,
+            "class": WidgetWired,
             "deps": [],
             "unique": True,
             "kwargs": {"interval": 1},
         },
         "network_rate": {
-            "class": BarWidgetNetworkRate,
+            "class": WidgetNetworkRate,
             "deps": [],
             "unique": False,
             "kwargs": {
                 "interval": 1,
-                "conv_map": {
-                    "Kb/s":  1024,
-                    "Mb/s":  1024 ** 2,
-                    "b/s":  1
-                }
+                "conv_map": {"Kb/s": 1024, "Mb/s": 1024**2, "b/s": 1},
             },
         },
     }
@@ -359,8 +357,18 @@ class MehBarGUI(Gtk.ApplicationWindow):
             ],
             "center": [
                 {"type": "playerctl", "player_names": ["spotify_player", "firefox"]},
-                {"type": "backlight", "device": 13, "label_format": "{level}% {ramp}", "ramp": ["A", "B", "C"] },
-                {"type": "bluetooth", "interval": 1, "label_format": "{ramp}", "ramp": ["OFF", "ON", "CONN"]}
+                {
+                    "type": "backlight",
+                    "device": 13,
+                    "label_format": "{level}% {ramp}",
+                    "ramp": ["A", "B", "C"],
+                },
+                {
+                    "type": "bluetooth",
+                    "interval": 1,
+                    "label_format": "{ramp}",
+                    "ramp": ["OFF", "ON", "CONN"],
+                },
                 # {
                 #     "type": "battery",
                 #     "label_format": "{ramp} {percent}% {timeleft}",
@@ -374,7 +382,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 #             "\U000f0088",
                 #             "\U000f007f",
                 #             "\U000f0089", "\U000f0081", "\U000f008a", "\U000f0079", "\U000f0085"
-
                 #             ]
                 # },
             ],
@@ -388,7 +395,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
                         "(?i)german.*": "DE",
                     },
                 },
-                 {
+                {
                     "type": "wired",
                     "iface": "eth0",
                     "ramp": [
@@ -543,7 +550,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         self.set_child(self.main_box)
 
-    def new_widget_for(self, *_, **kwargs) -> BarWidget:
+    def new_widget_for(self, *_, **kwargs) -> Widget:
 
         widget = None
 
@@ -593,7 +600,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         w_class_args = set()
 
         for name, param in signature(w_class).parameters.items():
-
             w_class_args.add(name)
 
             if name != "kwargs":
@@ -683,7 +689,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
     async def init_and_run_widgets(self):
         self.init_widgets()
         await self.run_widgets()
-
 
 
 class MehBar(Gtk.Application):

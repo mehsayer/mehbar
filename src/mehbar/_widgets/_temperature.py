@@ -3,10 +3,10 @@ import os
 
 import psutil
 
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 from mehbar.exceptions import BarConfigError
 
-class BarWidgetTemperature(BarWidget):
+class WidgetTemperature(Widget):
     def __init__(
         self,
         source: int | str | Path | None,

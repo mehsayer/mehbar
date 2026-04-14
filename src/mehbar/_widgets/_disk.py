@@ -1,7 +1,7 @@
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 import psutil
 
-class BarWidgetDiskUsage(BarWidget):
+class WidgetDiskUsage(Widget):
 
     def __init__(self, interval: int, label_format: str, path: str):
         super().__init__(interval, label_format)

@@ -1,13 +1,13 @@
 import os
 import getpass
 import time
-from mehbar.widgets import BarWidget
+from mehbar.widgets import Widget
 from mehbar.tools import FormattableTimeDelta
 from datetime import timedelta, datetime
 import socket
 import time
 
-class BarWidgetSession(BarWidget):
+class WidgetSession(Widget):
     def __init__(self, interval: int, label_format: str):
         super().__init__(interval, label_format)
 
