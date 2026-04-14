@@ -74,7 +74,8 @@ from mehbar._widgets import (
     BarWidgetNetworkRate,
     BarWidgetSession,
     BarWidgetBattery,
-    BarWidgetBacklight
+    BarWidgetBacklight,
+    BarWidgetBluetooth
 )
 from mehbar.widgets import BarWidget
 from mehbar.exceptions import BarConfigError
@@ -171,6 +172,11 @@ class MehBarGUI(Gtk.ApplicationWindow):
             "class": BarWidgetBacklight,
             "unique": False,
             "kwargs": {"interval": 5, "driver": "acpi", "step": 10},
+        },
+        "bluetooth": {
+            "class": BarWidgetBluetooth,
+            "unique": True,
+            "kwargs": {"interval": 5},
         },
         "playerctl": {
             "class": BarWidgetPlayerCtl,
@@ -353,7 +359,8 @@ class MehBarGUI(Gtk.ApplicationWindow):
             ],
             "center": [
                 {"type": "playerctl", "player_names": ["spotify_player", "firefox"]},
-                {"type": "backlight", "device": 13, "label_format": "{level}% {ramp}", "ramp": ["A", "B", "C"] }
+                {"type": "backlight", "device": 13, "label_format": "{level}% {ramp}", "ramp": ["A", "B", "C"] },
+                {"type": "bluetooth", "interval": 1, "label_format": "{ramp}", "ramp": ["OFF", "ON", "CONN"]}
                 # {
                 #     "type": "battery",
                 #     "label_format": "{ramp} {percent}% {timeleft}",
@@ -404,21 +411,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
                     "backend": "iwd",
                     "label_format": "{ramp} {ssid} {percentage}%",
                 },
-                # {
-                #     "type": "pulseaudio_volume",
-                #     "ramp": [
-                #         "\U000f075f",
-                #         "\U000f057f",
-                #         "\U000f0580",
-                #         "\U000f0580",
-                #         "\U000f057e",
-                #     ],
-                #     "label_format": "{ramp} {percent}%",
-                # },
-                # {
-                #     "type": "datetime",
-                #     "label_format": "\U000f0150 {datetime:%H:%M}",
-                # },
+                {
+                    "type": "pulseaudio_volume",
+                    "ramp": [
+                        "\U000f075f",
+                        "\U000f057f",
+                        "\U000f0580",
+                        "\U000f0580",
+                        "\U000f057e",
+                    ],
+                    "label_format": "{ramp} {percent}%",
+                },
+                {
+                    "type": "datetime",
+                    "label_format": "\U000f0150 {datetime:%H:%M}",
+                },
             ],
         }
     }
@@ -486,7 +493,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        homo = True
+        homo = False
 
         self.i3_conn = None
         self.widget_list = []
@@ -655,7 +662,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             else:
                 box.set_visible(False)
 
-    async def windget_runner(self, widget: Gtk.Widget, name: str | None = None):
+    async def _run_widget(self, widget: Gtk.Widget, name: str | None = None):
         try:
             await widget.run()
         except Exception as ex:
@@ -664,13 +671,12 @@ class MehBarGUI(Gtk.ApplicationWindow):
             logging.error(
                 "disabling widget: %s, reason: %s", name, ex, exc_info=EXC_INFO
             )
-            raise
 
     async def run_widgets(self):
         async with asyncio.TaskGroup() as grp:
             for widget in self.widget_list:
                 name = widget.get_name()
-                task = grp.create_task(self.windget_runner(widget, name), name=name)
+                task = grp.create_task(self._run_widget(widget, name), name=name)
                 self.task_ref_set.add(task)
                 task.add_done_callback(self.task_ref_set.discard)
 

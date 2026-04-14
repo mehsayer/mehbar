@@ -19,4 +19,5 @@ from mehbar._widgets._network_rate import BarWidgetNetworkRate
 from mehbar._widgets._session import BarWidgetSession
 from mehbar._widgets._battery import BarWidgetBattery
 from mehbar._widgets._backlight import BarWidgetBacklight
+from mehbar._widgets._bluetooth import BarWidgetBluetooth
 
