@@ -1,14 +1,13 @@
 import re
-import asyncio
-
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
-from gi.repository import Gtk, GLib
+import anyio
+from gi.repository import GLib, Gtk
 from i3ipc.aio import Connection
 
-from mehbar.tools import OptionalFormatter
 from mehbar.actions import Action, CallableAction
+from mehbar.tools import OptionalFormatter
 
 
 class GestureMouseClick(Gtk.GestureClick, Gtk.GestureSingle):
@@ -16,14 +15,13 @@ class GestureMouseClick(Gtk.GestureClick, Gtk.GestureSingle):
 
 
 class BarWindgetInterface:
-
     async def run(self):
         raise NotImplementedError()
 
-    def update(self):
+    async def run_wrapper(self):
         raise NotImplementedError()
 
-    def vformat_label(self, **kwargs):
+    def vsformat(self, **kwargs):
         raise NotImplementedError()
 
     def set_label_idle(self, label: str):
@@ -38,12 +36,14 @@ class BarWindgetInterface:
     def onscroll_call(self, func_up: Callable, func_down: Callable):
         raise NotImplementedError()
 
+    def shutdown(self):
+        raise NotImplementedError()
+
     def stop(self):
-        pass
+        raise NotImplementedError()
 
 
 class Widget(BarWindgetInterface, Gtk.Label):
-
     def __init__(
         self,
         interval: int = 0,
@@ -52,8 +52,8 @@ class Widget(BarWindgetInterface, Gtk.Label):
     ):
         super().__init__()
 
-        self._run = True
-        self.aio_loop = None
+        self._init_loop = False
+        self.loop_token = None
         self._last_value: Any | None = None
         self._last_text: str | None = None
         self.cache: dict[str, Any] = {}
@@ -68,22 +68,37 @@ class Widget(BarWindgetInterface, Gtk.Label):
 
         self.add_css_class("bar-widget")
 
-    async def run(self):
+    async def sleep_interval(self) -> bool:
 
-        self.aio_loop = asyncio.get_running_loop()
+        if self._init_loop:
+            if self.interval > 0:
+                self._init_loop = True
+                await anyio.sleep(self.interval)
+            else:
+                return False
+        else:
+            self._init_loop = True
+        return True
 
-        self.update()
+    def shutdown(self):
+        self.interval = -1
 
-        if self.interval > 0:
-            while self._run:
-                self.update()
-                await asyncio.sleep(self.interval)
+    def stop(self):
+        raise WidgetTerminated()
+
+    async def run_wrapper(self):
+        self.loop_token = anyio.lowlevel.current_token()
+        await self.run()
 
     def _set_label_idle(self, label: str) -> bool:
         """Calls Widget.set_label and returns False, so that it can be removed
         from event sources.
         """
         super().set_label(label.strip())
+        return GLib.SOURCE_REMOVE
+
+    def _set_visible_idle(self, state: bool):
+        super().set_visible(state)
         return GLib.SOURCE_REMOVE
 
     def _onclick(self, button: int, action: Action):
@@ -106,10 +121,11 @@ class Widget(BarWindgetInterface, Gtk.Label):
         controller.connect("scroll", _scroll)
         self.add_controller(controller)
 
-
-    # TODO: rename to vsformat
-    def vformat_label(self, **kwargs):
+    def vsformat(self, **kwargs):
         return self.formatter.format(self.label_format, **kwargs)
+
+    def set_visible_idle(self, state: bool):
+        GLib.idle_add(self._set_visible_idle, state)
 
     def set_label_idle(self, label: str):
         if self._last_text != label:
@@ -117,7 +133,7 @@ class Widget(BarWindgetInterface, Gtk.Label):
             GLib.idle_add(self._set_label_idle, label)
 
     def format_label_idle(self, **kwargs):
-        self.set_label_idle(self.vformat_label(**kwargs).strip())
+        self.set_label_idle(self.vsformat(**kwargs).strip())
 
     def onclick_call(self, button: int, func: Callable, *args, **kwargs):
         self._onclick(button, CallableAction(func, *args, **kwargs))
@@ -125,16 +141,11 @@ class Widget(BarWindgetInterface, Gtk.Label):
     def onscroll_call(self, func_up: Callable, func_down: Callable):
         self._onscroll(CallableAction(func_up), CallableAction(func_down))
 
+    def elt_run_sync(self, func: Callable, *args):
+        anyio.from_thread.run_sync(func, *args, token=self.loop_token)
 
-    def call_threadsafe(self, func: Callable, *args):
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(func, *args)
-
-    def update(self):
-        raise NotImplementedError()
-
-    def stop(self):
-        self._run = False
+    def elt_run(self, coro: Coroutine, *args):
+        anyio.from_thread.run(coro, *args, token=self.loop_token)
 
 
 class RewriteMixin:

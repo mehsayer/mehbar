@@ -1,6 +1,8 @@
-from mehbar.widgets import Widget, RewriteMixin, I3ListenerMixin
-from i3ipc.aio import Connection
 from i3ipc import Event
+from i3ipc.aio import Connection
+
+from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+
 
 class WidgetI3Scratchpad(I3ListenerMixin, Widget):
     def __init__(self, label_format: str, always_show: bool, i3_conn: Connection):
@@ -14,14 +16,13 @@ class WidgetI3Scratchpad(I3ListenerMixin, Widget):
         def _dispatch_scratchpad(con: Con):
             num = 0
 
-            if con is not None:
-                if (scrpad := con.scratchpad()) is not None:
-                    num = len(scrpad.nodes) + len(scrpad.floating_nodes)
-                    if self._last_value != num:
-                        self._last_value = num
-                        self.format_label_idle(count=num)
+            if con is not None and (scrpad := con.scratchpad()) is not None:
+                num = len(scrpad.nodes) + len(scrpad.floating_nodes)
+                if self._last_value != num:
+                    self._last_value = num
+                    self.format_label_idle(count=num)
 
-            self.set_visible(not (self.always_show and num == 0))
+            self.set_visible_idle(not (self.always_show and num == 0))
 
         async def _callback_scratchpad(*_):
             _dispatch_scratchpad(await conn.get_tree())

@@ -1,13 +1,14 @@
-from mehbar.widgets import Widget
-from mehbar.exceptions import CapabilityError
-import psutil
 from itertools import batched
+
+import psutil
+
+from mehbar.exceptions import CapabilityError
 from mehbar.tools import FormattableTimeDelta
+from mehbar.widgets import Widget
 
 
 class WidgetBattery(Widget):
-
-    MAX_CHARGE=100
+    MAX_CHARGE = 100
 
     def __init__(self, interval: int, label_format: str, ramp: list[str] | None = None):
         super().__init__(interval, label_format, ramp)
@@ -28,28 +29,34 @@ class WidgetBattery(Widget):
 
             for charge in range(self.MAX_CHARGE + 1):
                 if (nramp := len(ramp_batched)) > 0:
-                    ramp_idx = int(min(charge, self.MAX_CHARGE - 1) / (self.MAX_CHARGE / nramp))
+                    ramp_idx = int(
+                        min(charge, self.MAX_CHARGE - 1) / (self.MAX_CHARGE / nramp)
+                    )
                     self.ramps.append(ramp_batched[ramp_idx])
         else:
             self.ramps.extend([(None, None)] * (self.MAX_CHARGE + 1))
 
-    def update(self):
+    async def run(self):
+        while await self.sleep_interval():
+            if (bat_st := psutil.sensors_battery()) is not None:
+                if bat_st != self._last_value:
+                    self._last_value = bat_st
 
-        if (bat_st := psutil.sensors_battery()) is not None:
+                    percent = min(int(bat_st.percent), self.MAX_CHARGE)
 
-            if bat_st != self._last_value:
-                self._last_value = bat_st
+                    timeleft = None
 
-                percent = min(int(bat_st.percent), self.MAX_CHARGE)
+                    if bat_st.secsleft not in [
+                        psutil.POWER_TIME_UNLIMITED,
+                        psutil.POWER_TIME_UNKNOWN,
+                    ]:
+                        timeleft = FormattableTimeDelta(bat_st.secsleft)
 
-                timeleft = None
-
-                if bat_st.secsleft not in [psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN]:
-                    timeleft = FormattableTimeDelta(bat_st.secsleft)
-
-                self.format_label_idle(ramp=self.ramps[percent + 2][bat_st.power_plugged],
-                                       timeleft=timeleft,
-                                       percent=percent)
-        else:
-            self.format_label_idle(ramp=self.ramps[0][0], timeleft=None, percent=0)
-            # raise CapabilityError("no battery detected")
+                    self.format_label_idle(
+                        ramp=self.ramps[percent + 2][bat_st.power_plugged],
+                        timeleft=timeleft,
+                        percent=percent,
+                    )
+            else:
+                self.format_label_idle(ramp=self.ramps[0][0], timeleft=None, percent=0)
+                # raise CapabilityError("no battery detected")

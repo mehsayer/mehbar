@@ -1,15 +1,14 @@
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import asyncio
 import enum
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 import psutil
-
 from gi.repository import Gio
-from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import Widget
 
 from mehbar._internals import DBusFacade
+from mehbar.exceptions import BarConfigError, CapabilityError
+from mehbar.widgets import Widget
 
 
 @enum.verify(enum.NAMED_FLAGS)
@@ -65,7 +64,6 @@ def fill_missing_r(info: WiredInfo, options: WiredOptions):
 
 
 class WiredInfoQuery:
-
     async def get_info_(self, iface: str, options: WiredOptions):
         raise NotImplementedError()
 
@@ -77,7 +75,6 @@ class WiredInfoQuery:
 
 
 class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
-
     BASE_SVC = "org.freedesktop.NetworkManager"
     BASE_OBJ = "/org/freedesktop/NetworkManager"
     BASE_IFACE = "org.freedesktop.NetworkManager"
@@ -117,11 +114,9 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
             raise RuntimeError("NetworkManager: no devices available")
 
         for dev_obj in dev_prop:
-
             dev_proxy = await self.p_new_async(self.DEV_IFACE, dev_obj)
 
             if self.p_get_prop(dev_proxy, "Interface") == iface:
-
                 if WiredOptions.HWADDR in options:
                     hwaddr = self.p_get_prop(dev_proxy, "HwAddress")
 
@@ -134,13 +129,11 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
                 o_act_conn = self.p_get_prop(dev_proxy, "ActiveConnection")
 
                 if o_act_conn is not None:
-
                     p_act_conn = await self.p_new_async(self.ACT_CONN_IFACE, o_act_conn)
 
                     conn_type = self.p_get_prop(p_act_conn, "Type")
 
                     if conn_type == "802-11-wireless":
-
                         if WiredOptions.IPV4 in options:
                             ipv4 = await self.p_get_ipaddr_async(p_act_conn, 4)
 
@@ -150,9 +143,7 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
                         o_conn = self.p_get_prop(p_act_conn, "Connection")
 
                         if (WiredOptions.SSID | WiredOptions.SECURITY) & options:
-
                             if o_conn is not None:
-
                                 method = self.CONN_IFACE + ".GetSettings"
 
                                 result = await self.new_call_async(
@@ -170,7 +161,6 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
                                     if WiredOptions.SECURITY in options:
                                         sec_type = wlan.get("security")
                                         if sec_type is not None:
-
                                             if (
                                                 sec := result.get(sec_type)
                                             ) is not None:
@@ -182,7 +172,6 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
 
 
 class UnmanagedBackend(WiredInfoQuery):
-
     def __init__(self, *_):
         pass
 
@@ -193,19 +182,18 @@ class UnmanagedBackend(WiredInfoQuery):
         pwrd = False
         connd = False
 
-        with open(base_path / "operstate", "r", encoding="ascii") as fhandle:
-            if fhandle.readline().strip() == 'up':
+        async with await anyio.open_file(base_path / "operstate", "r") as fhandle:
+            if (await fhandle.readline()).strip() == "up":
                 pwrd = True
 
-        with open(base_path / "carrier", "r", encoding="ascii") as fhandle:
-            if fhandle.readline().strip() == '1':
+        async with await anyio.open_file(base_path / "carrier", "r") as fhandle:
+            if (await fhandle.readline()).strip() == "1":
                 connd = True
 
         return WiredInfo(iface, None, pwrd, connd)
 
 
 class ConnManBackend(DBusFacade, WiredInfoQuery):
-
     BASE_SVC = "net.connman"
     BASE_OBJ = "/"
     BASE_IFACE = "net.connman.Manager"
@@ -241,7 +229,6 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
                     ready &= True
                     if eth_obj := svc.get("Ethernet"):
                         if eth_obj.get("Interface") == iface:
-
                             if WiredOptions.NAME in options:
                                 name = svc.get("Name")
 
@@ -262,14 +249,13 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
 
 
 class WidgetWired(Widget):
-
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,
         "connman": ConnManBackend,
         "unmanaged": UnmanagedBackend,
     }
 
-    FMT_FIELDS = ["ipv4", "ipv6", "hwaddr", 'ramp']
+    FMT_FIELDS = ["ipv4", "ipv6", "hwaddr", "ramp"]
 
     def __init__(
         self,
@@ -298,7 +284,6 @@ class WidgetWired(Widget):
         fld_cnt = 0
 
         for fld in set(self.formatter.get_fields(label_format)):
-
             if fld in self.FMT_FIELDS:
                 fld_cnt += 1
                 opt = WiredOptions.for_name(fld)
@@ -311,26 +296,18 @@ class WidgetWired(Widget):
         if fld_cnt == 0:
             raise BarConfigError("no known format fields for label")
 
-
     async def run(self):
 
-        if self.interval > 0:
-            while self._run:
-                info = await self.dbus_iface.get_info(self.iface, self.qry_options)
-                ramp = None
+        while await self.sleep_interval():
+            info = await self.dbus_iface.get_info(self.iface, self.qry_options)
+            ramp = None
 
-                if self.ramps:
+            if self.ramps:
+                if info.connected and info.powered:
+                    ramp = self.ramps[2]
+                elif not info.connected:
+                    ramp = self.ramps[1]
+                else:
+                    ramp = self.ramps[0]
 
-                    if info.connected and info.powered:
-                        ramp = self.ramps[2]
-                    elif not info.connected:
-                        ramp = self.ramps[1]
-                    else:
-                        ramp = self.ramps[0]
-
-                self.format_label_idle(ramp=ramp, **asdict(info))
-
-                await asyncio.sleep(self.interval)
-
-    def update(self):
-        raise NotImplementedError()
+            self.format_label_idle(ramp=ramp, **asdict(info))

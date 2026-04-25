@@ -1,10 +1,11 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 import psutil
 
-from mehbar.widgets import Widget
 from mehbar.exceptions import BarConfigError
+from mehbar.widgets import Widget
+
 
 class WidgetFanSpeed(Widget):
     def __init__(
@@ -28,11 +29,12 @@ class WidgetFanSpeed(Widget):
             elif isinstance(source, Path):
                 self.path_fan = source
 
-
         if self.path_fan is None:
             expect_fields.extend(self.get_speeds().keys())
         elif not self.path_fan.is_file():
-            raise BarConfigError(f"fan speed source file does not exist: {self.path_fan}")
+            raise BarConfigError(
+                f"fan speed source file does not exist: {self.path_fan}"
+            )
         else:
             expect_fields.append("rpm")
 
@@ -62,32 +64,29 @@ class WidgetFanSpeed(Widget):
             for sfan in l_sfan:
                 selector = name
                 if sfan.label:
-                    selector += '/' + sfan.label
+                    selector += "/" + sfan.label
 
                 d_speeds[selector] = round(sfan.current)
         return d_speeds
 
+    async def run(self):
+        while await self.sleep_interval():
+            if self.path_fan:
+                speed = 0
+                with open(self.path_fan, "r", encoding="ascii") as fhandle:
+                    speed = int(fhandle.readline())
 
-    def update(self):
+                norm_speed = min(speed, self.max_speed)
+                self.format_label_idle(ramp=self.ramps[norm_speed], rpm=norm_speed)
 
-        if self.path_fan:
+            else:
+                d_speeds = {}
+                max_curr_speed = 0
 
-            speed = 0
-            with open(self.path_fan, "r", encoding="ascii") as fhandle:
-                speed = int(fhandle.readline())
+                for fld, speed in self.get_speeds().items():
+                    if fld in self.fields:
+                        max_curr_speed = max(max_curr_speed, speed)
+                        d_speeds[fld] = speed
 
-            norm_speed=min(speed, self.max_speed)
-            self.format_label_idle(ramp=self.ramps[norm_speed],
-                                   rpm=norm_speed)
-
-        else:
-            d_speeds = {}
-            max_curr_speed = 0
-
-            for fld, speed in self.get_speeds().items():
-                if fld in self.fields:
-                    max_curr_speed = max(max_curr_speed, speed)
-                    d_speeds[fld] = speed
-
-            norm_speed=min(max_curr_speed, self.max_speed)
-            self.format_label_idle(ramp=self.ramps[norm_speed], **d_speeds)
+                norm_speed = min(max_curr_speed, self.max_speed)
+                self.format_label_idle(ramp=self.ramps[norm_speed], **d_speeds)

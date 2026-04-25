@@ -1,15 +1,14 @@
-from pulsectl_asyncio import PulseAsync
-from mehbar.widgets import Widget
-import asyncio
-import enum
 from functools import partial
 
-class SinkAction(enum.IntEnum):
-    VOLUME = 0
-    MUTE = 1
+import anyio
+from pulsectl_asyncio import PulseAsync
+
+from mehbar.widgets import Widget
 
 
 class WidgetPulseVolume(Widget):
+    CMD_BASE = 128
+
     def __init__(
         self,
         sink_name: int,
@@ -22,11 +21,9 @@ class WidgetPulseVolume(Widget):
         self.sink_name = sink_name
         self.max_vol = max(min(max_vol, 200), 20)
 
-        self.aio_loop = None
-
         self.vol_delta = vol_delta / 100
 
-        self.sink_action_queue = asyncio.Queue(maxsize=8)
+        self.sstream, self.rstream = anyio.create_memory_object_stream[int](8)
 
         self.results: list[list[str]] = [[], []]
 
@@ -39,32 +36,27 @@ class WidgetPulseVolume(Widget):
                 unmuted = ramp[1:][ramp_idx]
                 muted = ramp[0]
 
-            self.results[0].append(self.vformat_label(percent=vol, ramp=unmuted))
-            self.results[1].append(self.vformat_label(percent=vol, ramp=muted))
+            self.results[0].append(self.vsformat(percent=vol, ramp=unmuted))
+            self.results[1].append(self.vsformat(percent=vol, ramp=muted))
 
         self.onclick_call(
-            3, partial(self.call_threadsafe, self._sink_action, SinkAction.MUTE, 0)
+            3, partial(self.elt_run_sync, self._sink_action, self.CMD_BASE)
         )
 
         self.onscroll_call(
             partial(
-                self.call_threadsafe,
-                self._sink_action,
-                SinkAction.VOLUME,
-                -self.vol_delta,
+                self.elt_run_sync, self._sink_action, self.CMD_BASE - self.vol_delta
             ),
             partial(
-                self.call_threadsafe,
-                self._sink_action,
-                SinkAction.VOLUME,
-                self.vol_delta,
+                self.elt_run_sync, self._sink_action, self.CMD_BASE + self.vol_delta
             ),
         )
 
-    def _sink_action(self, action: SinkAction, value: int):
-
-        if not self.sink_action_queue.full():
-            self.sink_action_queue.put_nowait((action, value))
+    def _sink_action(self, cmd: int):
+        try:
+            self.sstream.send_nowait(cmd)
+        except anyio.WouldBlock:
+            pass
 
     async def _listen(self, handle: PulseAsync):
 
@@ -78,10 +70,11 @@ class WidgetPulseVolume(Widget):
 
             if vol <= self.max_vol:
                 self.set_label_idle(self.results[sink.mute][vol])
-                await asyncio.sleep(0.15)
+                await anyio.sleep(0.1)
 
         # if we start with volume level, that's more than 1.0 (100)
         self.set_label_idle(self.results[0][100])
+
         await _update_volume_label(handle)
 
         async for event in handle.subscribe_events("sink"):
@@ -92,22 +85,20 @@ class WidgetPulseVolume(Widget):
 
         sink = await handle.get_sink_by_name(self.sink_name)
 
-        while True:
-            action, delta = await self.sink_action_queue.get()
+        async with self.rstream:
+            async for cmd in self.rstream:
+                if cmd == self.CMD_BASE:
+                    await handle.mute(sink, sink.mute == 0)
+                else:
+                    delta = cmd - self.CMD_BASE
+                    vol = round(max(0, sink.volume.value_flat + delta) * 100)
 
-            if action == SinkAction.VOLUME:
-                vol = round(max(0, sink.volume.value_flat + delta) * 100)
-
-                if vol >= 0 and vol <= self.max_vol:
-                    await handle.volume_change_all_chans(sink, delta)
-                    await asyncio.sleep(0.1)
-            elif action == SinkAction.MUTE:
-                await handle.mute(sink, sink.mute == 0)
+                    if vol >= 0 and vol <= self.max_vol:
+                        await handle.volume_change_all_chans(sink, delta)
+                        await anyio.sleep(0.1)
 
     async def run(self):
-        self.aio_loop = asyncio.get_running_loop()
-
         async with PulseAsync("poll-volume") as pulse:
-            async with asyncio.TaskGroup() as grp:
-                tlisten = grp.create_task(self._listen(pulse))
-                tconsume = grp.create_task(self._consume(pulse))
+            async with anyio.create_task_group() as grp:
+                grp.start_soon(self._listen, pulse)
+                grp.start_soon(self._consume, pulse)

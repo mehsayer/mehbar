@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from typing import Any
-from collections.abc import Callable
-from ctypes import CDLL
-from inspect import Parameter, signature
-
-import asyncio
 import logging
 import os
 import signal
 import sys
-import threading
+from collections.abc import Callable
+from ctypes import CDLL
+from functools import partial
+from inspect import Parameter, signature
+from threading import Thread
+from typing import Any
+
+import anyio
 
 EXC_INFO = os.getenv("MEHBAR_LOG_EXCEPTIONS") is not None
 
@@ -39,8 +40,7 @@ if cdll_failed:
 try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gtk4LayerShell", "1.0")
-    from gi.repository import Gtk, Gdk, Gio, GLib
-    from gi.repository import Gtk4LayerShell
+    from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell
 except ValueError:
     logging.critical("failed to select required GTK4 version", exc_info=EXC_INFO)
     sys.exit(1)
@@ -54,35 +54,33 @@ except ImportError:
 
 
 from mehbar._widgets import (
+    WidgetBacklight,
+    WidgetBattery,
+    WidgetBluetooth,
     WidgetCPUPercentage,
-    WidgetTemperature,
     WidgetDateTime,
-    WidgetStatic,
-    WidgetExecTail,
+    WidgetDiskUsage,
     WidgetExecRepeat,
+    WidgetExecTail,
+    WidgetFanSpeed,
+    WidgetI3KeyboardLayout,
+    WidgetI3Mode,
+    WidgetI3Scratchpad,
+    WidgetI3Window,
+    WidgetI3Workspaces,
     WidgetMemoryUsage,
+    WidgetNetworkRate,
     WidgetPlayerCtl,
     WidgetPulseVolume,
-    WidgetDiskUsage,
-    WidgetI3Mode,
-    WidgetI3Window,
-    WidgetI3Scratchpad,
-    WidgetI3Workspaces,
-    WidgetI3KeyboardLayout,
+    WidgetSession,
+    WidgetStatic,
+    WidgetTemperature,
     WidgetWifiSignal,
     WidgetWired,
-    WidgetFanSpeed,
-    WidgetNetworkRate,
-    WidgetSession,
-    WidgetBattery,
-    WidgetBacklight,
-    WidgetBluetooth,
 )
-
-from mehbar.widgets import Widget
 from mehbar.exceptions import BarConfigError
 from mehbar.tools import overlay_dict_r
-
+from mehbar.widgets import Widget
 
 
 def get_primary_mon_width() -> int:
@@ -314,61 +312,63 @@ class MehBarGUI(Gtk.ApplicationWindow):
     DEFAULT_CONFIG = {
         "widgets": {
             "start": [
-                {
-                    "type": "i3_workspaces",
-                    "rewrite": {},
-                },
+                # {
+                #     "type": "i3_workspaces",
+                #     "rewrite": {},
+                # },
                 {
                     "type": "temperature",
                     "ramp": ["\uf2cb", "\uf2c9", "\uf2c8", "\uf2c7"],
                     "label_format": "{ramp} {temp}\u00b0C",
                 },
-                {
-                    "type": "cpu_percentage",
-                    "label_format": "\uf4bc {percent}%",
-                },
-                {
-                    "type": "memory",
-                    "label_format": "\U000f07af {percent}%",
-                },
-                {
-                    "type": "disk",
-                    "label_format": "\uf0a0 {used_gib} GiB",
-                },
-                {
-                    "type": "static",
-                    "classes": ["separator"],
-                    "label_format": "\U000f01d9",
-                },
-                {
-                    "type": "i3_scratchpad",
-                    "label_format": "\U000f0ab6 {count}",
-                },
-                {
-                    "type": "i3_mode",
-                    "label_format": "{mode}",
-                    "rewrite": {"resize": "\U000f0a68", "default": "\ueb7f"},
-                },
-                {
-                    "type": "i3_window",
-                    "label_format": "\ueb7f {title}",
-                    "rewrite": {"foot": "Terminal", "footclient": "Terminal"},
-                },
+                # {
+                #     "type": "cpu_percentage",
+                #     "label_format": "\uf4bc {percent}%",
+                # },
+                # {
+                #     "type": "memory",
+                #     "label_format": "\U000f07af {percent}%",
+                # },
+                # {
+                #     "type": "disk",
+                #     "label_format": "\uf0a0 {used_gib} GiB",
+                # },
+                # {
+                #     "type": "static",
+                #     "classes": ["separator"],
+                #     "label_format": "\U000f01d9",
+                # },
+                # {
+                #     "type": "i3_scratchpad",
+                #     "label_format": "\U000f0ab6 {count}",
+                # },
+                # {
+                #     "type": "i3_mode",
+                #     "label_format": "{mode}",
+                #     "rewrite": {"resize": "\U000f0a68", "default": "\ueb7f"},
+                # },
+                # {
+                #     "type": "i3_window",
+                #     "label_format": "\ueb7f {title}",
+                #     "rewrite": {"foot": "Terminal", "footclient": "Terminal"},
+                # },
             ],
             "center": [
-                {"type": "playerctl", "player_names": ["spotify_player", "firefox"]},
+                # {"type": "playerctl", "player_names": ["spotify_player", "firefox"]},
                 {
                     "type": "backlight",
                     "device": 13,
+                    "driver": "acpi",
+                    "interval": 3,
                     "label_format": "{level}% {ramp}",
                     "ramp": ["A", "B", "C"],
                 },
-                {
-                    "type": "bluetooth",
-                    "interval": 1,
-                    "label_format": "{ramp}",
-                    "ramp": ["OFF", "ON", "CONN"],
-                },
+                # {
+                #     "type": "bluetooth",
+                #     "interval": 1,
+                #     "label_format": "{ramp}",
+                #     "ramp": ["OFF", "ON", "CONN"],
+                # },
                 # {
                 #     "type": "battery",
                 #     "label_format": "{ramp} {percent}% {timeleft}",
@@ -395,17 +395,17 @@ class MehBarGUI(Gtk.ApplicationWindow):
                         "(?i)german.*": "DE",
                     },
                 },
-                {
-                    "type": "wired",
-                    "iface": "eth0",
-                    "ramp": [
-                        "II",
-                        "IA",
-                        "AA",
-                    ],
-                    "backend": "unmanaged",
-                    "label_format": "{ipv4} {ramp}",
-                },
+                # {
+                #     "type": "wired",
+                #     "iface": "eth0",
+                #     "ramp": [
+                #         "II",
+                #         "IA",
+                #         "AA",
+                #     ],
+                #     "backend": "unmanaged",
+                #     "label_format": "{ipv4} {ramp}",
+                # },
                 {
                     "type": "wifi",
                     "iface": "wlan0",
@@ -429,10 +429,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
                     ],
                     "label_format": "{ramp} {percent}%",
                 },
-                {
-                    "type": "datetime",
-                    "label_format": "\U000f0150 {datetime:%H:%M}",
-                },
+                # {
+                #     "type": "datetime",
+                #     "label_format": "\U000f0150 {datetime:%H:%M}",
+                # },
             ],
         }
     }
@@ -505,7 +505,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.i3_conn = None
         self.widget_list = []
         self._unique_widget_types = set()
-        self.task_ref_set = set()
 
         self.app_ = self.get_application()
         self.set_default_size(get_primary_mon_width(), 24)
@@ -621,9 +620,9 @@ class MehBarGUI(Gtk.ApplicationWindow):
         w_class_args.clear()
         del_args.clear()
 
-        if _kwargs.get("interval", 1) < 1:
+        if _kwargs.get("interval", 0) < 0:
             raise BarConfigError(
-                "the value of 'interval' field in widget config must not be less than 1"
+                "the value of 'interval' field in widget config must not be less than 0"
             )
 
         widget = w_class(**_kwargs)
@@ -644,7 +643,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         return widget
 
-    def init_widgets(self):
+    def _init_widgets(self):
         for section in ["start", "center", "end"]:
             box = getattr(self, f"{section}_box")
 
@@ -670,25 +669,23 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
     async def _run_widget(self, widget: Gtk.Widget, name: str | None = None):
         try:
-            await widget.run()
+            await widget.run_wrapper()
         except Exception as ex:
-            widget.stop()
+            widget.shutdown()
             widget.set_visible(False)
+            widget.get_parent().remove(widget)
             logging.error(
                 "disabling widget: %s, reason: %s", name, ex, exc_info=EXC_INFO
             )
 
     async def run_widgets(self):
-        async with asyncio.TaskGroup() as grp:
+
+        self._init_widgets()
+
+        async with anyio.create_task_group() as grp:
             for widget in self.widget_list:
                 name = widget.get_name()
-                task = grp.create_task(self._run_widget(widget, name), name=name)
-                self.task_ref_set.add(task)
-                task.add_done_callback(self.task_ref_set.discard)
-
-    async def init_and_run_widgets(self):
-        self.init_widgets()
-        await self.run_widgets()
+                grp.start_soon(self._run_widget, widget, name, name=name)
 
 
 class MehBar(Gtk.Application):
@@ -701,10 +698,8 @@ class MehBar(Gtk.Application):
             active_window.present()
         else:
             self.win = MehBarGUI(application=self)
-
-            self.win.init_widgets()
-            t_module_worker = threading.Thread(
-                target=lambda: asyncio.run(self.win.run_widgets())
+            t_module_worker = Thread(
+                target=partial(anyio.run, self.win.run_widgets), name="AIO Worker"
             )
             t_module_worker.daemon = True
             t_module_worker.start()

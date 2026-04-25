@@ -1,17 +1,12 @@
-from mehbar.widgets import Widget, RewriteMixin, I3ListenerMixin
-from i3ipc.aio import Connection
 from i3ipc import Event
+from i3ipc.aio import Connection
+
+from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+
 
 class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, Widget):
-    def __init__(self,
-                 rewrite: dict[str, str],
-                 label_format: str,
-                 i3_conn: Connection):
-        super().__init__(0,
-                         label_format,
-                         None,
-                         rewrite=rewrite,
-                         i3_conn=i3_conn)
+    def __init__(self, rewrite: dict[str, str], label_format: str, i3_conn: Connection):
+        super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
 
     async def run(self):
         for i3_i in await (await self.get_i3_conn()).get_inputs():
@@ -19,7 +14,7 @@ class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, Widget):
                 self._push_layout(i3_i.xkb_active_layout_name)
                 break
 
-        async def _callback_kb_layout(_, event: InputEvent):
+        def _callback_kb_layout(_, event: InputEvent):
             evinput = event.input
             if evinput.type == "keyboard":
                 if self._last_value != evinput.xkb_active_layout_name:

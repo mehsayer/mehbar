@@ -1,7 +1,7 @@
-import asyncio
 from functools import partial
 from typing import Any
 
+import anyio
 from gi.repository import Gio, GLib
 
 
@@ -89,8 +89,7 @@ class DBusFacade:
         if flags is not None:
             _flags |= flags
 
-        proxy_ready_event = asyncio.Event()
-        proxy_ready_event.clear()
+        proxy_ready_event = anyio.Event()
         proxy_exception = None
         proxy = None
 
@@ -104,10 +103,10 @@ class DBusFacade:
             finally:
                 proxy_ready_event.set()
 
-        aio_loop = asyncio.get_running_loop()
+        loop_token = anyio.lowlevel.current_token()
 
         # Note, that the callback is run on main thread, so we need to
-        # schedule it to run on the thread running asyncio loop
+        # schedule it to run on the thread running event loop
         Gio.DBusProxy.new(
             self.bus,
             _flags,
@@ -116,7 +115,7 @@ class DBusFacade:
             obj,
             iface,
             None,
-            partial(aio_loop.call_soon_threadsafe, _proxy_ready_cb),
+            partial(anyio.from_thread.run_sync, _proxy_ready_cb, token=loop_token),
         )
 
         await proxy_ready_event.wait()
@@ -149,7 +148,7 @@ class DBusFacade:
         if arg is not None and isinstance(arg, str):
             arg = GLib.Variant("(s)", (arg,))
 
-        call_ready_event = asyncio.Event()
+        call_ready_event = anyio.Event()
         call_result = None
         call_exception = None
 
@@ -163,7 +162,7 @@ class DBusFacade:
             finally:
                 call_ready_event.set()
 
-        aio_loop = asyncio.get_running_loop()
+        loop_token = anyio.lowlevel.current_token()
 
         proxy.call(
             method,
@@ -171,7 +170,7 @@ class DBusFacade:
             Gio.DBusCallFlags.NO_AUTO_START,
             self.CALL_TIMEOUT_MS,
             None,
-            partial(aio_loop.call_soon_threadsafe, _call_ready_cb),
+            partial(anyio.from_thread.run_sync, _call_ready_cb, token=loop_token),
         )
 
         await call_ready_event.wait()

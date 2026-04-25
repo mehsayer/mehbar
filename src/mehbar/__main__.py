@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import gi
 
 _LOG_LEVEL = os.getenv("MEHBAR_LOG_LEVEL", "DEBUG").upper()
 
@@ -18,11 +19,12 @@ class LevelAwareLoggingFormatter(logging.Formatter):
         self.datefmt = datefmt
 
         for levelno in logging.getLevelNamesMapping().values():
-            style = logging.PercentStyle(self.LEVEL_FORMATS.get(levelno, self.DEFAULT_FORMAT),
-                                         defaults=defaults)
+            level_fmt = self.LEVEL_FORMATS.get(levelno, self.DEFAULT_FORMAT)
+            level_style = logging.PercentStyle(level_fmt, defaults=defaults)
+
             if validate:
-                style.validate()
-            self._styles[levelno] = style
+                level_style.validate()
+            self._styles[levelno] = level_style
 
     def usesTime(self):
         return True

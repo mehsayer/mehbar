@@ -2,3 +2,11 @@ from mehbar._internals._dbus_facade import DBusFacade
 from mehbar._internals._backlight import BacklightDDCCI
 from mehbar._internals._backlight import BacklightInterface
 from mehbar._internals._backlight import BacklightACPI
+from mehbar._internals._wifi import ConnManBackend
+from mehbar._internals._wifi import IWDBackend
+from mehbar._internals._wifi import NetworkManagerBackend
+from mehbar._internals._wifi import UnmanagedBackend
+from mehbar._internals._wifi import WifiInfo
+from mehbar._internals._wifi import WifiInfoQuery
+from mehbar._internals._wifi import WifiOptions
+from mehbar._internals._wifi import WPASupplicantBackend

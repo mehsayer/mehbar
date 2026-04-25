@@ -1,13 +1,12 @@
-from dataclasses import dataclass, field, asdict
-
-import asyncio
 import enum
+from dataclasses import asdict, dataclass, field
 
+import anyio
 from gi.repository import Gio
-from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import Widget
 
 from mehbar._internals import DBusFacade
+from mehbar.exceptions import BarConfigError, CapabilityError
+from mehbar.widgets import Widget
 
 
 class BluetoothState(enum.IntEnum):
@@ -17,13 +16,12 @@ class BluetoothState(enum.IntEnum):
 
 
 class BluezBackend(DBusFacade):
-
     BASE_SVC = "org.bluez"
     BASE_OBJ = "/"
     BASE_IFACE = "org.freedesktop.DBus.ObjectManager"
 
-    ADAPT_OBJ_BASE = 'org.bluez.Adapter'
-    DEV_OBJ_BASE = 'org.bluez.Device'
+    ADAPT_OBJ_BASE = "org.bluez.Adapter"
+    DEV_OBJ_BASE = "org.bluez.Device"
 
     async def get_state(self) -> BluetoothState:
         objects = await self.new_call_async(
@@ -53,12 +51,9 @@ class BluezBackend(DBusFacade):
 
         return ret
 
-class WidgetBluetooth(Widget):
 
-    def __init__(self,
-        interval: int,
-        label_format: str,
-        ramp: list[str] | None = None):
+class WidgetBluetooth(Widget):
+    def __init__(self, interval: int, label_format: str, ramp: list[str] | None = None):
         super().__init__(interval, label_format, ramp)
 
         self.dbus_iface = BluezBackend(None)
@@ -70,26 +65,19 @@ class WidgetBluetooth(Widget):
         if ramp_len >= 3:
             self.ramps = self.ramp[:3]
         elif ramp_len > 0:
-            self.ramps = self.ramp + ([''] * 3 - ramp_len)
-
+            self.ramps = self.ramp + ([""] * 3 - ramp_len)
 
     async def run(self):
 
-        if self.interval > 0:
-            while self._run:
-                state = await self.dbus_iface.get_state()
+        while await self.sleep_interval():
+            state = await self.dbus_iface.get_state()
 
-                if state != self._last_value:
-                    self._last_value = state
+            if state != self._last_value:
+                self._last_value = state
 
-                    ramp = None
+                ramp = None
 
-                    if self.ramps:
-                        ramp = self.ramps[state]
+                if self.ramps:
+                    ramp = self.ramps[state]
 
-                    self.format_label_idle(ramp=ramp)
-
-                    await asyncio.sleep(self.interval)
-
-    def update(self):
-        raise NotImplementedError()
+                self.format_label_idle(ramp=ramp)

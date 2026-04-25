@@ -1,31 +1,29 @@
-from mehbar.widgets import Widget
-from mehbar.exceptions import BarConfigError
-
-from mehbar._internals import BacklightDDCCI, BacklightInterface, BacklightACPI
+import logging
 from functools import partial
-import asyncio
+
+import anyio
+
+from mehbar._internals import BacklightACPI, BacklightDDCCI, BacklightInterface
+from mehbar.exceptions import BarConfigError
+from mehbar.widgets import Widget
+
 
 class WidgetBacklight(Widget):
+    DRIVERS = {"acpi": BacklightACPI, "ddcci": BacklightDDCCI}
 
-    DRIVERS = {
-        "acpi": BacklightACPI,
-        "ddcci": BacklightDDCCI
-    }
-
-    ACT_DISPLAY = 0
-    ACT_SET = 1
-
-    def __init__(self,
+    def __init__(
+        self,
         driver: str,
         device: int | str,
         step: int,
         interval: int,
         label_format: str,
-        ramp: list[str] | None = None):
+        ramp: list[str] | None = None,
+    ):
         super().__init__(interval, label_format, ramp)
 
         if driver not in self.DRIVERS:
-            drivers = ', '.join(self.DRIVERS.keys())
+            drivers = ", ".join(self.DRIVERS.keys())
             raise BarConfigError(f"{driver}: unknown backend, not one of: {drivers}.")
 
         self.driver = self.DRIVERS[driver](device)
@@ -34,15 +32,14 @@ class WidgetBacklight(Widget):
 
         self.step = max(step, 1)
 
-        self.queue = asyncio.Queue(maxsize=8)
-
-        self.aio_loop = None
+        self.sstream, self.rstream = anyio.create_memory_object_stream[int](8)
 
         self.ramps = []
 
-        self.onscroll_call(partial(self._change_level_threadsafe, self.step),
-                           partial(self._change_level_threadsafe, -self.step))
-
+        self.onscroll_call(
+            partial(self.elt_run_sync, self._change_level, self.step),
+            partial(self.elt_run_sync, self._change_level, -self.step),
+        )
 
     async def _build_ramps(self, driver: BacklightInterface):
 
@@ -57,24 +54,19 @@ class WidgetBacklight(Widget):
 
             self.ramps.append(ramp_val)
 
-
-    def _change_level_threadsafe(self, value: int):
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(self._change_level, value)
-
-
-    def _change_level(self, value: int):
-        if not self.queue.full():
-            self.queue.put_nowait((self.ACT_SET, value))
-
+    def _change_level(self, level: int):
+        try:
+            self.sstream.send_nowait(level)
+        except anyio.WouldBlock:
+            pass
 
     async def _poll(self, driver: BacklightInterface):
-        while True:
-            if not self.queue.full():
-                self.queue.put_nowait((self.ACT_DISPLAY, await driver.get_level()))
 
-            await asyncio.sleep(self.interval)
-
+        while await self.sleep_interval():
+            try:
+                self.sstream.send_nowait(0)
+            except anyio.WouldBlock:
+                pass
 
     async def _consume(self, driver: BacklightInterface):
 
@@ -82,30 +74,27 @@ class WidgetBacklight(Widget):
 
         max_level = driver.device.max_level
 
-        while True:
-            source, level = await self.queue.get()
+        # while True:
+        async with self.rstream:
+            async for level in self.rstream:
+                if level == 0:
+                    display_level = await driver.get_level()
+                else:
+                    display_level = await driver.change_level(level)
 
-            if source == self.ACT_DISPLAY:
-                display_level = level
-            else:
-                display_level = await driver.change_level(level)
+                if display_level != self._last_value:
+                    self._last_value = display_level
 
-            if display_level != self._last_value:
-                self._last_value = display_level
+                    norm_level = int(max(0, min(display_level, max_level)))
 
-                norm_level=int(max(0, min(display_level, max_level)))
-
-                self.format_label_idle(ramp=self.ramps[norm_level], level=norm_level)
-
+                    self.format_label_idle(
+                        ramp=self.ramps[norm_level], level=norm_level
+                    )
 
     async def run(self):
-
-        self.aio_loop = asyncio.get_running_loop()
-
         async with self.driver as bl_driver:
-
             await self._build_ramps(bl_driver)
 
-            async with asyncio.TaskGroup() as grp:
-                tlisten = grp.create_task(self._poll(bl_driver))
-                tconsume = grp.create_task(self._consume(bl_driver))
+            async with anyio.create_task_group() as grp:
+                grp.start_soon(self._poll, bl_driver)
+                grp.start_soon(self._consume, bl_driver)

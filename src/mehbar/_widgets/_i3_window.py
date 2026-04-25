@@ -1,21 +1,16 @@
-from mehbar.widgets import Widget, RewriteMixin, I3ListenerMixin
-from i3ipc.aio import Connection
 from i3ipc import Event
+from i3ipc.aio import Connection
+
+from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+
 
 class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
-
-    def __init__(self,
-                 rewrite: dict[str, str],
-                 label_format: str,
-                 i3_conn: Connection):
-        super().__init__(0,
-                         label_format,
-                         None,
-                         rewrite=rewrite,
-                         i3_conn=i3_conn)
+    def __init__(self, rewrite: dict[str, str], label_format: str, i3_conn: Connection):
+        super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
 
     async def run(self):
-        self.set_visible(False)
+        self.set_visible_idle(False)
+
         conn = await self.get_i3_conn()
 
         def _dispatch_con(con: Con):
@@ -28,7 +23,7 @@ class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
                     win_name = con.app_id
 
                 if win_name is not None:
-                    self.set_visible(True) # TODO: All set wisible calls on main thread please
+                    self.set_visible_idle(True)
 
                     if self._last_value != win_name:
                         self._last_value = win_name
@@ -36,9 +31,9 @@ class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
                             self.cache[win_name] = self.rewrite(win_name)
                         self.format_label_idle(title=self.cache[win_name])
                 else:
-                    self.set_visible(False)
+                    self.set_visible_idle(False)
             else:
-                self.set_visible(False)
+                self.set_visible_idle(False)
 
         # Find the focused window title, if any, on start
         tree = await conn.get_tree()

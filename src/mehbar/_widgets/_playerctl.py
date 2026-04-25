@@ -1,9 +1,8 @@
-from typing import Any
-import asyncio
 import logging
+from typing import Any
 
-from gi.repository import GLib, Gtk
-from gi.repository import Playerctl
+import anyio
+from gi.repository import GLib, Gtk, Playerctl
 
 from mehbar.tools import OptionalFormatter
 from mehbar.widgets import Widget
@@ -26,7 +25,6 @@ class PlayerctlButton(Widget):
 
 
 class WidgetPlayerCtl(Gtk.Box):
-
     MAX_SCROLL_SPEED = 100
     MIN_SCROLL_SPEED = 1
 
@@ -71,13 +69,11 @@ class WidgetPlayerCtl(Gtk.Box):
 
         self.player = None
 
-        self.player_ready = asyncio.Event()
+        self.player_ready = anyio.Event()
 
         self._t_last = 0.0
 
         self._run = True
-
-        self.aio_loop = None
 
         self.tick = min(max(tick_ms, 10), 2000) / 1000
 
@@ -104,7 +100,6 @@ class WidgetPlayerCtl(Gtk.Box):
         scroll_speed = self.MIN_SCROLL_SPEED
 
         for module in modules:
-
             mod_type = module.get("type")
             if mod_type not in self.SUPPORTED_MODULES:
                 continue
@@ -216,22 +211,10 @@ class WidgetPlayerCtl(Gtk.Box):
 
                     self.append(self.scroll_view)
 
-        self.set_visible(self.always_show)
-
-    def control_play_pause(self):
-        pass
-
-    def control_next(self):
-        pass
-
-    def control_previous(self):
-        pass
+        self.set_visible_idle(self.always_show)
 
     def init_player(self, name):
-        # choose if you want to manage the player based on the name
-        # logging.debug("player appeared: %s", name.name)
         if name.name in self.player_names:
-
             player = Playerctl.Player.new_from_name(name)
 
             props = player.props
@@ -283,17 +266,16 @@ class WidgetPlayerCtl(Gtk.Box):
         if self.player is not None:
             self._player_call_threadsafe("set_shuffle", not self.player.props.shuffle)
 
-    def _player_call_threadsafe(self, method: str, *args, **kwargs):
+    def _player_call_threadsafe(self, method: str, *args):
 
-        def _call_method(method: str, *args, **kwargs):
+        def _call_method(method: str, *args):
             if self.player is not None:
                 try:
                     getattr(self.player, method)(*args, **kwargs)
                 except GLib.GError:
                     self.log.error("cannot perform action: %s", method)
 
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(_call_method, method, *args, **kwargs)
+        self.elt_run_sync(_call_method, method, *args)
 
     def increment_ticker_idle(self):
 
@@ -359,8 +341,7 @@ class WidgetPlayerCtl(Gtk.Box):
         def _reset():
             self._t_last = 0
 
-        if self.aio_loop is not None:
-            self.aio_loop.call_soon_threadsafe(_reset)
+        self.elt_run_sync(_reset)
 
     def on_shuffle(self, player: Playerctl.Player, shuffle_status: bool):
         self.player = player
@@ -379,11 +360,10 @@ class WidgetPlayerCtl(Gtk.Box):
 
         if status == Playerctl.PlaybackStatus.PLAYING:
             self.player = player
-            self.set_visible(True)
+            self.set_visible_idle(True)
             self.player_ready.set()
             self.set_play_idle(False)
         elif status == Playerctl.PlaybackStatus.PAUSED:
-
             self.player_ready.clear()
 
             if player is not None:
@@ -396,7 +376,7 @@ class WidgetPlayerCtl(Gtk.Box):
 
             self.set_play_idle(True)
         else:
-            self.set_visible(self.always_show)
+            self.set_visible_idle(self.always_show)
             self.player_ready.clear()
             self.format_title_idle()
             self.format_time_idle()
@@ -439,7 +419,6 @@ class WidgetPlayerCtl(Gtk.Box):
             self.reset_time()
 
             if self.player is not None:
-
                 t_tot_min, t_tot_sec = divmod(self.t_total, 60)
 
                 while self.player_ready.is_set():
@@ -447,7 +426,6 @@ class WidgetPlayerCtl(Gtk.Box):
                         self.player.props.playback_status
                         == Playerctl.PlaybackStatus.PLAYING
                     ):
-
                         raw_sec = int(self.player.get_position() / 10**6)
 
                         if self._t_last < raw_sec:
@@ -462,20 +440,18 @@ class WidgetPlayerCtl(Gtk.Box):
 
                         self.increment_ticker_idle()
 
-                        await asyncio.sleep(self.tick)
-            await asyncio.sleep(1)
+                        await anyio.sleep(self.tick)
+            await anyio.sleep(1)
 
     async def run(self):
-        self.aio_loop = asyncio.get_running_loop()
-
         self.manager.connect("name-appeared", self.on_name_appeared)
         self.manager.connect("player-vanished", self.on_player_vanished)
 
         for name in self.manager.props.player_names:
             self.init_player(name)
 
-        async with asyncio.TaskGroup() as tg:
-            task = tg.create_task(self.watch_positon())
+        async with anyio.create_task_group() as grp:
+            grp.start_soon(self.watch_positon)
 
     def stop(self):
         raise NotImplementedError()

@@ -1,21 +1,20 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import functools
-from pathlib import Path
-from dataclasses import dataclass
-import os
-import struct
-import operator
-import errno
 import logging
-
-# from time import perf_counter
-import asyncio
+import operator
+import os
 import re
+import struct
+from dataclasses import dataclass
+from pathlib import Path
 
+import anyio
 
-# https://docs.kernel.org/admin-guide/abi-stable.html#abi-sys-class-backlight-backlight-bl-power
+# References:
+# https://docs.kernel.org/admin-guide/abi-stable.html#
 
 
 @dataclass(frozen=True)
@@ -49,6 +48,8 @@ class BacklightInterface:
     EDID_SN_DESC = b"\0\0\0\xff\0"
     PATH_DRM = "/sys/class/drm"
     GLOB_I2C_DEV = "i2c-*"
+    GLOB_DRM_CARD = "card*"
+    PATH_DDC_DEV = "ddc/i2c-dev"
     PATH_DEV = "/dev"
     API_PAUSE = 0.06  # time to wait between packets, the spec says 30 ms
     I2C_ADDR_TX = 0x37  # packet transmission base address
@@ -74,8 +75,8 @@ class BacklightInterface:
             i2c_name = "i2c-" + str(dev_num)
 
             if (Path(cls.PATH_DEV) / i2c_name).exists():
-                for path_card in Path(cls.PATH_DRM).glob("card*"):
-                    if (path_card / "ddc" / "i2c-dev" / i2c_name).is_dir():
+                for path_card in Path(cls.PATH_DRM).glob(self.GLOB_DRM_CARD):
+                    if (path_card / self.PATH_DDC_DEV / i2c_name).is_dir():
                         ret = path_card.name
                         break
         return ret
@@ -86,9 +87,9 @@ class BacklightInterface:
         ret = -1
 
         if card_name is not None:
-            i2c_dev_path = Path(cls.PATH_DRM) / card_name / "ddc" / "i2c-dev"
+            i2c_dev_path = Path(cls.PATH_DRM) / card_name / cls.PATH_DDC_DEV
 
-            for path_i2c in i2c_dev_path.glob("i2c-*"):
+            for path_i2c in i2c_dev_path.glob(cls.GLOB_I2C_DEV):
                 if (Path(cls.PATH_DEV) / path_i2c.name).exists():
                     try:
                         ret = int(path_i2c.name.split("-")[-1])
@@ -102,18 +103,18 @@ class BacklightInterface:
 
         ret = []
 
-        for path_card in Path(cls.PATH_DRM).glob("card*"):
+        for path_card in Path(cls.PATH_DRM).glob(cls.GLOB_DRM_CARD):
             connected = False
 
             path_status = path_card / "status"
 
             if path_status.is_file():
                 try:
-                    with open(path_status, "w", encoding="ascii") as fhandle:
-                        fhandle.write("detect")
-                        fhandle.flush()
+                    async with await anyio.open_file(path_status, "w") as fhandle:
+                        await fhandle.write("detect")
+                        await fhandle.flush()
 
-                    await asyncio.sleep(cls.API_PAUSE)
+                    await anyio.sleep(cls.API_PAUSE)
                 except OSError as ex:
                     if ex.errno == errno.EACCES:
                         logging.warning(
@@ -122,8 +123,8 @@ class BacklightInterface:
                     else:
                         raise
 
-                with open(path_status, "r", encoding="ascii") as fhandle:
-                    if fhandle.readline().strip() == "connected":
+                async with await anyio.open_file(path_status, "r") as fhandle:
+                    if (await fhandle.readline()).strip() == "connected":
                         connected = True
 
             i2c_num = cls.drm_to_i2c(path_card.name)
@@ -171,7 +172,7 @@ class BacklightInterface:
 
     async def change_level(self, delta: int | float) -> float:
         curr_level = await self.get_level()
-        await asyncio.sleep(0)
+        await anyio.lowlevel.checkpoint()
         level = curr_level + delta
         await self.set_level(level)
         return level
@@ -198,7 +199,7 @@ class BacklightACPI(BacklightInterface):
         self.device = None
         self.fd = -1
 
-    def _get_scale_sync(self, dir_bl: Path | str) -> float:
+    async def _get_scale_sync(self, dir_bl: Path | str) -> tuple[int, float]:
         mul = 0.0
         max_level = 100
 
@@ -206,8 +207,8 @@ class BacklightACPI(BacklightInterface):
             dir_bl = Path(dir_bl)
 
         try:
-            with open(dir_bl / "max_brightness", encoding="ascii") as fhandle:
-                max_level = int(fhandle.readline().strip())
+            async with await anyio.open_file(dir_bl / "max_brightness", "r") as fhandle:
+                max_level = int((await fhandle.readline()).strip())
                 mul = max_level / 100
         except (FileNotFoundError, TypeError, ValueError):
             pass
@@ -241,8 +242,8 @@ class BacklightACPI(BacklightInterface):
         for f_edid in Path(self.PATH_DRM).glob(card_glob + "/edid"):
             name, serial = None, None
 
-            with open(f_edid, "rb") as fhandle:
-                edid_bytes = fhandle.read(self.BUFFSZ_EDID)
+            async with await anyio.open_file(f_edid, "rb") as fhandle:
+                edid_bytes = await fhandle.read(self.BUFFSZ_EDID)
 
                 name, serial = self.get_dev_id(edid_bytes)
 
@@ -252,7 +253,7 @@ class BacklightACPI(BacklightInterface):
                 for f_bl in card_dir.glob(self.GLOB_DRM_BR):
                     dir_bl = f_bl.resolve().parent
 
-                    max_level, mul = self._get_scale_sync(dir_bl)
+                    max_level, mul = await self._get_scale_sync(dir_bl)
 
                     if mul > 0:
                         i2c_num = -1
@@ -281,7 +282,7 @@ class BacklightACPI(BacklightInterface):
                             else:
                                 ret = dev
                                 break
-            await asyncio.sleep(0)
+            await anyio.lowlevel.checkpoint()
 
         if ret is None:
             for dentry in os.scandir(self.PATH_BL):
@@ -289,7 +290,7 @@ class BacklightACPI(BacklightInterface):
                     path_bl = Path(dentry.path).resolve()
 
                     if self.disp is None or self.disp == path_bl.name:
-                        max_level, mul = self._get_scale_sync(path_bl)
+                        max_level, mul = await self._get_scale_sync(path_bl)
 
                         if mul > 0:
                             dev = BacklightDevice(
@@ -304,7 +305,7 @@ class BacklightACPI(BacklightInterface):
                             )
                             ret = dev
                             break
-                await asyncio.sleep(0)
+                await anyio.lowlevel.checkpoint()
 
         if ret is None and disconnected:
             ret = disconnected[0]
@@ -333,7 +334,7 @@ class BacklightACPI(BacklightInterface):
             os.fsync(self.fd)
             os.close(self.fd)
             self.fd = -1
-        await asyncio.sleep(0)
+        await anyio.lowlevel.checkpoint()
 
     async def get_level(self) -> float:
         level = 0.0
@@ -367,9 +368,6 @@ class BacklightDDCCI(BacklightInterface):
     I2C_WR_LEN = 0x80  # length mask
     I2C_WR_SUB = 0x51  # sub-address
 
-    PATH_DEV = "/dev"
-    GLOB_I2C = "i2c-*"
-
     def __init__(self, disp: int | str | None = None):
         super().__init__(disp)
 
@@ -385,9 +383,9 @@ class BacklightDDCCI(BacklightInterface):
 
         disconnected = []
 
-        i2c_re = re.compile(r"^i2c-([0-9]+)$")
+        i2c_re = re.compile(r"^i2c-(\d+)$")
 
-        for i2c_dev in Path(self.PATH_DEV).glob(self.GLOB_I2C):
+        for i2c_dev in Path(self.PATH_DEV).glob(self.GLOB_I2C_DEV):
             i2c_num = -1
 
             mul = 0.0
@@ -435,7 +433,7 @@ class BacklightDDCCI(BacklightInterface):
                             ret = dev
                             break
 
-            await asyncio.sleep(0)
+            await anyio.lowlevel.checkpoint()
 
         if ret is None and disconnected:
             ret = disconnected[0]
@@ -478,7 +476,7 @@ class BacklightDDCCI(BacklightInterface):
         if self.fd >= 0:
             os.close(self.fd)
             self.fd = -1
-        await asyncio.sleep(0)
+        await anyio.lowlevel.checkpoint()
 
     def _read_sync(self, n: int) -> tuple[int, ...]:
         buff = os.read(self.fd, n + 3)
@@ -507,7 +505,7 @@ class BacklightDDCCI(BacklightInterface):
 
     async def read(self, vcpopcode: int) -> tuple[int, int]:
         self._write_sync(self.I2C_READ, vcpopcode)
-        await asyncio.sleep(self.API_PAUSE)
+        await anyio.sleep(self.API_PAUSE)
         buff = self._read_sync(self.BUFFSZ_READ)
 
         if buff[0] != self.I2C_PRE_VALUE:
@@ -524,7 +522,7 @@ class BacklightDDCCI(BacklightInterface):
 
     async def get_edid(self) -> tuple[str, str]:
         os.write(self.fd, self.I2C_IDX_EDID.to_bytes())
-        await asyncio.sleep(self.API_PAUSE)
+        await anyio.sleep(self.API_PAUSE)
         buff = os.read(self.fd, self.BUFFSZ_EDID)
         return self.get_dev_id(buff)
 
