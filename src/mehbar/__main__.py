@@ -1,20 +1,21 @@
+import logging
 import os
 import sys
-import logging
-import gi
+from functools import partial
 
-_LOG_LEVEL = os.getenv("MEHBAR_LOG_LEVEL", "DEBUG").upper()
+from mehbar import MEHBAR_EXC_INFO, MEHBAR_LOG_LEVEL
 
 
 class LevelAwareLoggingFormatter(logging.Formatter):
-
-    DEFAULT_FORMAT = "[%(asctime)s] *%(levelname)s* <%(name)s>: %(message)s"
+    DEFAULT_FORMAT = "[%(asctime)s] *%(levelname)s*: %(message)s"
 
     LEVEL_FORMATS = {
         logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x, <%(taskName)s>): %(message)s"
     }
 
-    def __init__(self, fmt=None, datefmt=None, style='%', validate=True, *, defaults=None):
+    def __init__(
+        self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None
+    ):
         self._styles = {}
         self.datefmt = datefmt
 
@@ -32,12 +33,19 @@ class LevelAwareLoggingFormatter(logging.Formatter):
     def formatMessage(self, record: logging.LogRecord):
         return self._styles[record.levelno].format(record)
 
+
 logging.basicConfig(
-    level=logging.getLevelNamesMapping().get(_LOG_LEVEL, logging.INFO)
+    level=logging.getLevelNamesMapping().get(MEHBAR_LOG_LEVEL, logging.INFO)
 )
 
 for handler in logging.root.handlers:
     handler.setFormatter(LevelAwareLoggingFormatter())
+
+logging.info = partial(logging.info, exc_info=MEHBAR_EXC_INFO)
+logging.debug = partial(logging.debug, exc_info=MEHBAR_EXC_INFO)
+logging.error = partial(logging.error, exc_info=MEHBAR_EXC_INFO)
+logging.critical = partial(logging.critical, exc_info=MEHBAR_EXC_INFO)
+logging.warning = partial(logging.warning, exc_info=MEHBAR_EXC_INFO)
 
 # Remove '' and current working directory from the first entry
 # of sys.path, if present to avoid using current directory
@@ -60,5 +68,3 @@ if __name__ == "__main__":
     from mehbar._internals import main as _main
 
     _main.entrypoint(sys.argv)
-
-

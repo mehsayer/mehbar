@@ -1,4 +1,4 @@
-from i3ipc import Event
+from i3ipc import Event, InputEvent
 from i3ipc.aio import Connection
 
 from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget

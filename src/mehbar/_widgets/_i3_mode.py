@@ -1,4 +1,4 @@
-from i3ipc import Event
+from i3ipc import Event, ModeEvent
 from i3ipc.aio import Connection
 
 from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
@@ -30,7 +30,7 @@ class WidgetI3Mode(I3ListenerMixin, RewriteMixin, Widget):
 
         _dispatch_mode("default")
 
-        def _callback_mode(_: Connection, event: ModeEvent):
+        def _callback_mode(_: Connection, event: ModeEvent) -> None:
             _dispatch_mode(event.change)
 
         (await self.get_i3_conn()).on(Event.MODE, _callback_mode)

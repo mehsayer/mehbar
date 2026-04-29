@@ -214,7 +214,7 @@ class DBusFacade:
                 ret = _ret
         return ret
 
-    def get_prop(self, iface: str, obj: GLib.Variant | str, prop: str) -> str:
+    def get_prop(self, iface: str, obj: GLib.Variant | str, prop: str) -> Any | None:
         ret = None
 
         if obj is not None:
@@ -224,7 +224,7 @@ class DBusFacade:
 
     async def get_prop_async(
         self, iface: str, obj: GLib.Variant | str, prop: str
-    ) -> str:
+    ) -> Any | None:
         ret = None
 
         if obj is not None:

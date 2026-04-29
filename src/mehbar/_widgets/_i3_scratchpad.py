@@ -1,7 +1,7 @@
 from i3ipc import Event
-from i3ipc.aio import Connection
+from i3ipc.aio import Con, Connection
 
-from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+from mehbar.widgets import I3ListenerMixin, Widget
 
 
 class WidgetI3Scratchpad(I3ListenerMixin, Widget):
@@ -24,7 +24,7 @@ class WidgetI3Scratchpad(I3ListenerMixin, Widget):
 
             self.set_visible_idle(not (self.always_show and num == 0))
 
-        async def _callback_scratchpad(*_):
+        async def _callback_scratchpad(*_) -> None:
             _dispatch_scratchpad(await conn.get_tree())
 
         _dispatch_scratchpad(await conn.get_tree())

@@ -1,22 +1,29 @@
+import logging
 from itertools import compress
+from typing import Any
 
 import anyio
 from gi.repository import GLib, Gtk
-from i3ipc import Event
+from i3ipc import Event, WorkspaceEvent
 from i3ipc.aio import Connection
 
 from mehbar.widgets import BarWindgetInterface, I3ListenerMixin, RewriteMixin, Widget
 
 
 class I3WorkspaceButton(I3ListenerMixin, Widget):
-    def __init__(self, name: str, label: str, i3_conn: Connection):
+    def __init__(
+        self,
+        name: str,
+        label: str,
+        i3_conn: Connection,
+        loop_token: anyio.lowlevel.EventLoopToken | None = None,
+    ):
         super().__init__(0, None, i3_conn=i3_conn)
         self.set_name(name)
         self.set_label(label)
         self.add_css_class("workspace")
         self.onclick_call(1, self.switch_ws)
-        # TODO: get token from parent
-        self.loop_token = anyio.lowlevel.current_token()
+        self.loop_token = loop_token
 
     async def _switch_ws_async(self, name: str):
         i3_conn = await self.get_i3_conn()
@@ -201,8 +208,8 @@ class WidgetI3Workspaces(
                 case _:
                     pass
         elif len(self.ws_button_map) < self.max_workspaces:
-            child = I3WorkspaceButton(name, label, self.i3_conn)
-            self.box.append(child)
+            child = I3WorkspaceButton(name, label, self.i3_conn, self.loop_token)
+            GLib.idle_add(self.box.append, child)
             self.ws_button_map[name] = child
             if wsid >= 0:
                 self.wsid_map[name] = wsid
@@ -213,11 +220,14 @@ class WidgetI3Workspaces(
 
         return GLib.SOURCE_REMOVE
 
-    async def run(self):
+    async def run_wrapper(self):
+        self.loop_token = anyio.lowlevel.current_token()
+        await self.run()
 
+    async def run(self):
         self.i3_conn = await self.get_i3_conn()
 
-        def _callback_workspaces(_, event: WorkspaceEvent):
+        def _callback_workspaces(_: Connection, event: WorkspaceEvent) -> None:
             if event.change not in ["move", "restore", "reload"]:
                 prev_name = None
                 if event.old is not None:

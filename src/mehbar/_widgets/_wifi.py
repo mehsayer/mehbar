@@ -1,8 +1,5 @@
 from dataclasses import asdict
 
-import anyio
-from gi.repository import Gio
-
 from mehbar._internals import (
     ConnManBackend,
     IWDBackend,
@@ -11,7 +8,7 @@ from mehbar._internals import (
     WifiOptions,
     WPASupplicantBackend,
 )
-from mehbar.exceptions import BarConfigError, CapabilityError
+from mehbar.exceptions import BarConfigError
 from mehbar.widgets import Widget
 
 

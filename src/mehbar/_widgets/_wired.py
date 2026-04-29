@@ -1,8 +1,8 @@
-import asyncio
 import enum
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import anyio
 import psutil
 from gi.repository import Gio
 

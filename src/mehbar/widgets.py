@@ -6,12 +6,9 @@ import anyio
 from gi.repository import GLib, Gtk
 from i3ipc.aio import Connection
 
-from mehbar.actions import Action, CallableAction
+from mehbar.actions import Action, CallableAction, GestureMouseClick
+from mehbar.exceptions import WidgetTerminated
 from mehbar.tools import OptionalFormatter
-
-
-class GestureMouseClick(Gtk.GestureClick, Gtk.GestureSingle):
-    pass
 
 
 class BarWindgetInterface:

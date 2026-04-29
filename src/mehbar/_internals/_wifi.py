@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 
-from mehbar._internals import DBusFacade
 import enum
 from dataclasses import dataclass, field
 
+import anyio
+import psutil
+from gi.repository import Gio
+
+from mehbar._internals import DBusFacade
+from mehbar.exceptions import CapabilityError
 
 MIN_RSSI = -100
 MAX_RSSI = -30
@@ -43,16 +48,17 @@ class WifiInfo:
     ipv4: str | None = field(default=None)
     ipv6: str | None = field(default=None)
 
-
-    def matches(self, other: WifiInfo | int | None):
+    def matches(self, other):
         ret = False
         if other is not None:
             if isinstance(other, WifiInfo):
-
                 # TODO: add None checks
-                ret = self.iface == other.iface and self.ssid == other.ssid \
-                      and (self.rssi == other.rssi or self.percentage == other.percentage) \
-                      and (self.ipv4 == other.ipv4 or self.ipv6 == other.ipv6)
+                ret = (
+                    self.iface == other.iface
+                    and self.ssid == other.ssid
+                    and (self.rssi == other.rssi or self.percentage == other.percentage)
+                    and (self.ipv4 == other.ipv4 or self.ipv6 == other.ipv6)
+                )
             else:
                 raise TypeError("expected 'WifiInfo' or 'int'")
 
@@ -98,7 +104,6 @@ def fill_missing_r(info: WifiInfo, options: WifiOptions):
 
 
 class WifiInfoQuery:
-
     async def get_info_(self, iface: str, options: WifiOptions):
         raise NotImplementedError()
 
@@ -110,7 +115,6 @@ class WifiInfoQuery:
 
 
 class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
-
     BASE_SVC = "org.freedesktop.NetworkManager"
     BASE_OBJ = "/org/freedesktop/NetworkManager"
     BASE_IFACE = "org.freedesktop.NetworkManager"
@@ -150,11 +154,9 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
             raise RuntimeError("NetworkManager: no devices available")
 
         for dev_obj in dev_prop:
-
             dev_proxy = await self.p_new_async(self.DEV_IFACE, dev_obj)
 
             if self.p_get_prop(dev_proxy, "Interface") == iface:
-
                 if WifiOptions.HWADDR in options:
                     hwaddr = self.p_get_prop(dev_proxy, "HwAddress")
 
@@ -167,13 +169,11 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
                 o_act_conn = self.p_get_prop(dev_proxy, "ActiveConnection")
 
                 if o_act_conn is not None:
-
                     p_act_conn = await self.p_new_async(self.ACT_CONN_IFACE, o_act_conn)
 
                     conn_type = self.p_get_prop(p_act_conn, "Type")
 
                     if conn_type == "802-11-wireless":
-
                         if WifiOptions.IPV4 in options:
                             ipv4 = await self.p_get_ipaddr_async(p_act_conn, 4)
 
@@ -183,9 +183,7 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
                         o_conn = self.p_get_prop(p_act_conn, "Connection")
 
                         if (WifiOptions.SSID | WifiOptions.SECURITY) & options:
-
                             if o_conn is not None:
-
                                 method = self.CONN_IFACE + ".GetSettings"
 
                                 result = await self.new_call_async(
@@ -203,7 +201,6 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
                                     if WifiOptions.SECURITY in options:
                                         sec_type = wlan.get("security")
                                         if sec_type is not None:
-
                                             if (
                                                 sec := result.get(sec_type)
                                             ) is not None:
@@ -256,7 +253,6 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
             rssi = self.p_get_prop(p_bss, "Signal")
 
         if WifiOptions.SECURITY in options:
-
             p_netw = await self.p_new_async(self.IFACE_NETWORK, o_netw)
 
             if self.p_get_prop(p_netw, "Enabled"):
@@ -269,7 +265,6 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
 
 
 class UnmanagedBackend(WifiInfoQuery):
-
     def __init__(self, *_):
         pass
 
@@ -292,7 +287,6 @@ class UnmanagedBackend(WifiInfoQuery):
 
 
 class IWDBackend(DBusFacade, WifiInfoQuery):
-
     BASE_IFACE = "org.freedesktop.DBus.ObjectManager"
     BASE_SVC = "net.connman.iwd"
     BASE_OBJ = "/"
@@ -329,7 +323,6 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
 
                     if need_props and (stn_props := interfaces.get(self.STATION_IFACE)):
                         if conn_netw := stn_props.get("ConnectedNetwork"):
-
                             method = self.STATION_IFACE + ".GetOrderedNetworks"
 
                             networks = await self.new_call_async(
@@ -343,7 +336,6 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
                                         break
 
                             if (WifiOptions.SSID | WifiOptions.SECURITY) & options:
-
                                 p_ap = await self.p_new_async(
                                     self.NETWORK_IFACE, conn_netw
                                 )
@@ -367,7 +359,6 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
 
 
 class ConnManBackend(DBusFacade, WifiInfoQuery):
-
     BASE_SVC = "net.connman"
     BASE_OBJ = "/"
     BASE_IFACE = "net.connman.Manager"
@@ -388,31 +379,29 @@ class ConnManBackend(DBusFacade, WifiInfoQuery):
         if services is None or not services:
             raise CapabilityError("no 'connman' services found")
 
-        for _, svc in services:
-            if svc.get("Type") == "wifi" and svc.get("State") == "ready":
-                if eth_obj := svc.get("Ethernet"):
-                    if eth_obj.get("Interface") == iface:
-                        if WifiOptions.SECURITY in options:
-                            if sec := svc.get("Security"):
-                                security = ", ".join(sec).upper()
+        for svc in (_svc for _, _svc in services if _svc.get("Type") == "wifi"):
+            if svc.get("State") == "ready" and (eth_obj := svc.get("Ethernet")):
+                if eth_obj.get("Interface") == iface:
+                    if WifiOptions.SECURITY in options:
+                        if sec := svc.get("Security"):
+                            security = ", ".join(sec).upper()
 
-                        if WifiOptions.SSID in options:
-                            ssid = svc.get("Name")
+                    if WifiOptions.SSID in options:
+                        ssid = svc.get("Name")
 
-                        if WifiOptions.SIGNAL in options:
-                            pcnt = round(svc.get("Strength", 0))
+                    if WifiOptions.SIGNAL in options:
+                        pcnt = round(svc.get("Strength", 0))
 
-                        if WifiOptions.HWADDR in options:
-                            hwaddr = eth_obj.get("Address")
+                    if WifiOptions.HWADDR in options:
+                        hwaddr = eth_obj.get("Address")
 
-                        if WifiOptions.IPV4 in options:
-                            if ipv4_obj := svc.get("IPv4"):
-                                ipv4 = ipv4_obj.get("Address")
+                    if WifiOptions.IPV4 in options:
+                        if ipv4_obj := svc.get("IPv4"):
+                            ipv4 = ipv4_obj.get("Address")
 
-                        if WifiOptions.IPV6 in options:
-                            if ipv6_obj := svc.get("IPv6"):
-                                ipv6 = ipv6_obj.get("Address")
-
-                        break
+                    if WifiOptions.IPV6 in options:
+                        if ipv6_obj := svc.get("IPv6"):
+                            ipv6 = ipv6_obj.get("Address")
+                    break
 
         return WifiInfo(iface, ssid, None, pcnt, hwaddr, security, ipv4, ipv6)

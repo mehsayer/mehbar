@@ -1,28 +1,45 @@
+import json
+import logging
+import time
+
+import anyio
+from anyio.streams.text import TextReceiveStream
+
 from mehbar.widgets import Widget
 
 
-class WidgetExecTail(Widget):
-
-    def __init__(self, label_format: str, cmdline: list[str], max_lps: int):
-        super().__init__(0, label_format)
+class WidgetExecBase(Widget):
+    def __init__(
+        self,
+        interval: int,
+        label_format: str,
+        cmdline: str | list[str],
+        max_lps: int,
+    ):
+        super().__init__(interval, label_format)
         self.max_lps = min(max_lps, 10)
         self.cmdline = cmdline
-        self.proc = None
+
+    async def format_label_idle_json_async(self, json_str: str):
+        try:
+            self.format_label_idle(**json.loads(json_str))
+        except json.JSONDecodeError as ex:
+            logging.error("failed to parse JSON input: %s", ex)
+        finally:
+            await anyio.sleep(0.1)
+
+
+class WidgetExecTail(WidgetExecBase):
+    def __init__(self, label_format: str, cmdline: list[str], max_lps: int):
+        super().__init__(0, label_format, cmdline, max_lps)
 
     async def run(self):
+        async with await anyio.open_process(self.cmdline) as proc:
+            lps = 0
+            t0 = time.monotonic()
 
-        try:
-            self.proc = await asyncio.create_subprocess_exec(
-                *self.cmdline,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-
-            if self.proc.stdout is not None:
-
-                lps = 0
-                t0 = time.monotonic()
-                while line := await self.proc.stdout.readline():
+            if proc.stdout is not None:
+                async for line in TextReceiveStream(proc.stdout):
                     lps += 1
                     t1 = time.monotonic()
 
@@ -30,55 +47,16 @@ class WidgetExecTail(Widget):
                         lps = 0
                         t0 = t1
 
-                    if lps <= self.max_lps:
-                        try:
-                            self.format_label_idle(**json.loads(line))
-                            await asyncio.sleep(0.1)
-                        except json.JSONDecodeError as ex:
-                            logging.error("Failed to parse JSON: %s", str(ex))
-            await self.proc.wait()
-        finally:
-            if self.proc and self.proc.returncode is None:
-                self.proc.terminate()
-                try:
-                    await asyncio.wait_for(self.proc.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    self.proc.kill()
-
-    def stop(self):
-        if self.proc is not None and self.proc.returncode is None:
-            self.proc.terminate()
-        super().stop()
+                    if line and lps <= self.max_lps:
+                        await self.format_label_idle_json_async(line)
 
 
-class WidgetExecRepeat(Widget):
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        cmdline: list[str],
-        max_lps: int,
-    ):
-        super().__init__(interval, label_format)
-        self.max_lps = min(max_lps, 10)
-        self.cmdline = cmdline
-        self.proc = None
-
-
-    async def update(self):
-        self.proc = await asyncio.create_subprocess_exec(
-            *self.cmdline,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-
-        stdout, _ = await self.proc.communicate()
-
-        for line in stdout.decode().splitlines()[: self.max_lps]:
-            self.format_label_idle(**json.loads(line))
-        self.proc = None
-
-    def stop(self):
-        if self.proc is not None and self.proc.returncode is None:
-            self.proc.terminate()
-        super().stop()
+class WidgetExecRepeat(WidgetExecBase):
+    async def run(self):
+        while await self.sleep_interval():
+            proc = await anyio.run_process(self.cmdline)
+            if proc.stdout is not None:
+                for line in proc.stdout.decode().splitlines()[: self.max_lps]:
+                    if line.strip():
+                        await self.format_label_idle_json_async(line)
+                        break

@@ -2,7 +2,6 @@ from itertools import batched
 
 import psutil
 
-from mehbar.exceptions import CapabilityError
 from mehbar.tools import FormattableTimeDelta
 from mehbar.widgets import Widget
 

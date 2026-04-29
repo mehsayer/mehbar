@@ -2,7 +2,6 @@ import getpass
 import os
 import socket
 import time
-from datetime import datetime, timedelta
 
 from mehbar.tools import FormattableTimeDelta
 from mehbar.widgets import Widget

@@ -1,11 +1,18 @@
+# ruff: noqa: E402
 import logging
 from typing import Any
 
 import anyio
+import gi
+
+from mehbar.widgets import Widget
+
+gi.require_version("Playerctl", "2.0")
+
 from gi.repository import GLib, Gtk, Playerctl
 
+from mehbar.exceptions import BarConfigError
 from mehbar.tools import OptionalFormatter
-from mehbar.widgets import Widget
 
 
 class PlayerctlButton(Widget):
@@ -271,7 +278,7 @@ class WidgetPlayerCtl(Gtk.Box):
         def _call_method(method: str, *args):
             if self.player is not None:
                 try:
-                    getattr(self.player, method)(*args, **kwargs)
+                    getattr(self.player, method)(*args)
                 except GLib.GError:
                     self.log.error("cannot perform action: %s", method)
 

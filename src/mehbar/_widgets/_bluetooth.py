@@ -1,11 +1,7 @@
 import enum
-from dataclasses import asdict, dataclass, field
-
-import anyio
-from gi.repository import Gio
 
 from mehbar._internals import DBusFacade
-from mehbar.exceptions import BarConfigError, CapabilityError
+from mehbar.exceptions import CapabilityError
 from mehbar.widgets import Widget
 
 
@@ -60,12 +56,12 @@ class WidgetBluetooth(Widget):
 
         self.ramps = []
 
-        ramp_len = len(self.ramp)
-
-        if ramp_len >= 3:
-            self.ramps = self.ramp[:3]
-        elif ramp_len > 0:
-            self.ramps = self.ramp + ([""] * 3 - ramp_len)
+        if self.ramp is not None:
+            ramp_len = len(self.ramp)
+            if ramp_len >= 3:
+                self.ramps = self.ramp[:3]
+            elif ramp_len > 0:
+                self.ramps = self.ramp + ([""] * (3 - ramp_len))
 
     async def run(self):
 
