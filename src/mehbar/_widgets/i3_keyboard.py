@@ -1,12 +1,27 @@
 from i3ipc import Event, InputEvent
 from i3ipc.aio import Connection
 
-from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
 
 
-class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, Widget):
-    def __init__(self, rewrite: dict[str, str], label_format: str, i3_conn: Connection):
-        super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
+class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, WidgetBase):
+    TYPE = "i3_kblayout"
+
+    def __init__(
+        self,
+        label_format: str,
+        i3_conn: Connection,
+        rewrite: dict[str, str] | None = None,
+        icon_manager=None,
+    ):
+        super().__init__(
+            0,
+            label_format,
+            None,
+            icon_manager=icon_manager,
+            rewrite=rewrite,
+            i3_conn=i3_conn,
+        )
 
     async def run(self):
         for i3_i in await (await self.get_i3_conn()).get_inputs():

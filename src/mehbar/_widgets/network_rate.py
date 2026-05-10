@@ -3,14 +3,25 @@ from operator import itemgetter
 
 import psutil
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetNetworkRate(Widget):
+class WidgetNetworkRate(WidgetBase):
+    DEFAULT_CONVERSIONS = {"Kb/s": 1024, "Mb/s": 1024**2, "b/s": 1}
+    UNIQUE = False
+    TYPE = "network_rate"
+
     def __init__(
-        self, interval: int, iface: str, label_format: str, conv_map: dict[int, str]
+        self,
+        interval: int,
+        iface: str,
+        label_format: str,
+        conv_map: dict[int, str] | None = None,
     ):
         super().__init__(interval, label_format)
+
+        if conv_map is None:
+            conv_map = self.DEFAULT_CONVERSIONS
 
         self.conv_map = sorted(conv_map.items(), key=itemgetter(1), reverse=True)
         self.iface = None

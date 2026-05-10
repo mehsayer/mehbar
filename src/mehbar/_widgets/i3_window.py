@@ -1,15 +1,25 @@
 from i3ipc import Con, Event, WindowEvent
 from i3ipc.aio import Connection
 
-from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
 
 
-class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
-    def __init__(self, rewrite: dict[str, str], label_format: str, i3_conn: Connection):
+class WidgetI3Window(I3ListenerMixin, RewriteMixin, WidgetBase):
+    TYPE = "i3_window"
+
+    def __init__(
+        self,
+        label_format: str,
+        i3_conn: Connection,
+        rewrite: dict[str, str] | None = None,
+        always_show: bool = True,
+    ):
         super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
+        self.always_show = always_show
 
     async def run(self):
-        self.set_visible_idle(False)
+        if not self.always_show:
+            self.set_visible_idle(False)
 
         conn = await self.get_i3_conn()
 
@@ -31,9 +41,11 @@ class WidgetI3Window(I3ListenerMixin, RewriteMixin, Widget):
                             self.cache[win_name] = self.rewrite(win_name)
                         self.format_label_idle(title=self.cache[win_name])
                 else:
-                    self.set_visible_idle(False)
+                    if not self.always_show:
+                        self.set_visible_idle(False)
             else:
-                self.set_visible_idle(False)
+                if not self.always_show:
+                    self.set_visible_idle(False)
 
         # Find the focused window title, if any, on start
         tree = await conn.get_tree()

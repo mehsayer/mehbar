@@ -1,5 +1,26 @@
+import hashlib
 import string
+import weakref
+from functools import lru_cache, partial, wraps
+from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+# def weak_lru_cache(maxsize: int = 128, typed: bool = False):
+#     'LRU Cache decorator that keeps a weak reference to "self"'
+
+#     def wrapper(func):
+
+#         @lru_cache(maxsize, typed)
+#         def _func(_self, *args, **kwargs):
+#             return func(_self(), *args, **kwargs)
+
+#         @wraps(func)
+#         def inner(self, *args, **kwargs):
+#             return _func(weakref.ref(self), *args, **kwargs)
+
+#         return inner
+
+#     return wrapper
 
 
 def overlay_dict_r(
@@ -15,6 +36,15 @@ def overlay_dict_r(
             overlay_dict_r(bottom[ktop], vtop, max_depth, depth + 1)
         else:
             bottom[ktop] = vtop
+
+
+def md5sum_sync(fpath: str | Path) -> str:
+    hash = hashlib.md5()
+    with open(fpath, "rb") as fhandle:
+        reader = partial(fhandle.read, 128 * hash.block_size)
+        for chunk in iter(reader, b""):
+            hash.update(chunk)
+    return hash.hexdigest()
 
 
 class FormattableTimeDelta:

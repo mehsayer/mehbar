@@ -2,7 +2,7 @@ import enum
 
 from mehbar._internals import DBusFacade
 from mehbar.exceptions import CapabilityError
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
 class BluetoothState(enum.IntEnum):
@@ -48,7 +48,9 @@ class BluezBackend(DBusFacade):
         return ret
 
 
-class WidgetBluetooth(Widget):
+class WidgetBluetooth(WidgetBase):
+    TYPE = "bluetooth"
+
     def __init__(self, interval: int, label_format: str, ramp: list[str] | None = None):
         super().__init__(interval, label_format, ramp)
 

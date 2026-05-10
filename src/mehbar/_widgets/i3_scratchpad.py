@@ -1,11 +1,15 @@
 from i3ipc import Event
 from i3ipc.aio import Con, Connection
 
-from mehbar.widgets import I3ListenerMixin, Widget
+from mehbar.widget import I3ListenerMixin, WidgetBase
 
 
-class WidgetI3Scratchpad(I3ListenerMixin, Widget):
-    def __init__(self, label_format: str, always_show: bool, i3_conn: Connection):
+class WidgetI3Scratchpad(I3ListenerMixin, WidgetBase):
+    TYPE = "i3_scratchpad"
+
+    def __init__(
+        self, label_format: str, i3_conn: Connection, always_show: bool = True
+    ):
         super().__init__(0, label_format, i3_conn=i3_conn)
         self.always_show = always_show
 

@@ -3,17 +3,20 @@ from pathlib import Path
 import psutil
 
 from mehbar.exceptions import BarConfigError
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetFanSpeed(Widget):
+class WidgetFanSpeed(WidgetBase):
+    UNIQUE = False
+    TYPE = "fan_speed"
+
     def __init__(
         self,
-        source: str | Path | None,
-        max_speed: int,
         interval: int,
         label_format: str,
         ramp: list[str] | None = None,
+        source: str | Path | None = None,
+        max_speed: int = 5000,
     ):
         super().__init__(interval, label_format, ramp)
 

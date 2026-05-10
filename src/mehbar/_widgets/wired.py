@@ -8,7 +8,7 @@ from gi.repository import Gio
 
 from mehbar._internals import DBusFacade
 from mehbar.exceptions import BarConfigError, CapabilityError
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
 @enum.verify(enum.NAMED_FLAGS)
@@ -248,7 +248,8 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
         return WiredInfo(iface, name, pwrd, connd, hwaddr, ipv4, ipv6)
 
 
-class WidgetWired(Widget):
+class WidgetWired(WidgetBase):
+    TYPE = "wired"
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,
         "connman": ConnManBackend,

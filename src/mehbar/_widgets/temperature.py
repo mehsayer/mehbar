@@ -1,31 +1,44 @@
+import logging
 from pathlib import Path
 
 import anyio
 import psutil
 
 from mehbar.exceptions import BarConfigError
-from mehbar.widgets import Widget
+from mehbar.widget import IconManager, WidgetBase, WidgetContent
 
 
-class WidgetTemperature(Widget):
+class WidgetTemperature(WidgetBase):
+    UNIQUE = False
+
+    TYPE = "temperature"
+
     def __init__(
         self,
-        source: int | str | Path | None,
-        max_temp: int,
-        interval: int,
         label_format: str,
+        interval: int = 15,
         ramp: list[str] | None = None,
+        source: int | str | Path | None = 0,
+        max_temp: int = 100,
+        icon_manager: IconManager = None,
     ):
-        super().__init__(interval, label_format, ramp)
+        self.max_temp = min(max_temp, 200)
+        super().__init__(
+            interval,
+            label_format,
+            ramp,
+            icon_manager=icon_manager,
+            max_ramp_level=self.max_temp,
+        )
 
         expect_fields = ["ramp"]
 
         self.path_term = self.get_zone_path(source)
 
-        self.coro_temp_getter = self._get_temp_file
+        self._coro_get_content = self._get_temp_file
 
         if self.path_term is None:
-            self.coro_temp_getter = self._get_temp_sensors
+            self._coro_get_content = self._get_temp_sensors
             expect_fields.extend(self.get_temperatures().keys())
         elif not self.path_term.is_file():
             raise BarConfigError(f"source file does not exist: {self.path_term}")
@@ -39,18 +52,6 @@ class WidgetTemperature(Widget):
                 raise BarConfigError(f"unknown label field: {fld}")
             else:
                 self.fields.append(fld)
-
-        self.max_temp = max(min(max_temp, 200), 0)
-        self.ramps = []
-
-        for temp in range(self.max_temp + 1):
-            ramp_val = str()
-
-            if ramp is not None and (nramp := len(ramp)) > 0:
-                ramp_idx = int(min(temp, self.max_temp - 1) / (self.max_temp / nramp))
-                ramp_val = ramp[ramp_idx]
-
-            self.ramps.append(ramp_val)
 
     def get_zone_path(self, source: int | str | Path | None) -> Path:
         n_zone = 0
@@ -82,16 +83,15 @@ class WidgetTemperature(Widget):
                 d_temps[selector] = round(swhtemp.current)
         return d_temps
 
-    async def _get_temp_file(self) -> str:
+    async def _get_temp_file(self) -> WidgetContent:
         temp = 0
-
         async with await anyio.open_file(self.path_term, "r") as fhandle:
             temp = int(await fhandle.readline()) // 1000
 
         norm_temp = min(temp, self.max_temp)
-        return self.vsformat(ramp=self.ramps[norm_temp], temp=norm_temp)
+        return self.get_content(norm_temp, temp=norm_temp)
 
-    async def _get_temp_sensors(self) -> str:
+    async def _get_temp_sensors(self) -> WidgetContent:
         d_temps = {}
         max_curr_temp = 0
 
@@ -104,9 +104,9 @@ class WidgetTemperature(Widget):
 
         norm_temp = min(max_curr_temp, self.max_temp)
 
-        return self.vsformat(ramp=self.ramps[norm_temp], **d_temps)
+        return self.get_content(norm_temp, **d_temps)
 
     async def run(self):
         while await self.sleep_interval():
-            label_str = await self.coro_temp_getter()
-            self.set_label_idle(label_str)
+            content = await self._coro_get_content()
+            self.set_content_idle(content)

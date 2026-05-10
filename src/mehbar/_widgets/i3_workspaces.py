@@ -7,10 +7,10 @@ from gi.repository import GLib, Gtk
 from i3ipc import Event, WorkspaceEvent
 from i3ipc.aio import Connection
 
-from mehbar.widgets import BarWindgetInterface, I3ListenerMixin, RewriteMixin, Widget
+from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
 
 
-class I3WorkspaceButton(I3ListenerMixin, Widget):
+class I3WorkspaceButton(I3ListenerMixin, WidgetBase):
     def __init__(
         self,
         name: str,
@@ -34,21 +34,20 @@ class I3WorkspaceButton(I3ListenerMixin, Widget):
         self.elt_run(self._switch_ws_async, name)
 
 
-class WidgetI3Workspaces(
-    I3ListenerMixin, RewriteMixin, Gtk.ScrolledWindow, BarWindgetInterface
-):
+class WidgetI3Workspaces(I3ListenerMixin, RewriteMixin, Gtk.ScrolledWindow):
     MAX_WORKSPACE_CNT = 20
     MAX_SCROLL_SPEED = 100
 
+    TYPE = "i3_workspaces"
+
     def __init__(
         self,
-        rewrite: dict[str, str],
         i3_conn: Connection,
-        scroll_width: int,
-        scroll_speed: int,
-        max_workspaces: int,
+        scroll_width: int = 0,
+        scroll_speed: int = 10,
+        max_workspaces: int = 10,
         always_show: list[str] | None = None,
-        **kwargs,
+        rewrite: dict[str, str] = None,
     ):
         super().__init__(i3_conn=i3_conn, rewrite=rewrite)
 
@@ -100,7 +99,7 @@ class WidgetI3Workspaces(
             self.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
             self.set_child(self.box)
 
-    def scroll_into_view(self, widget: Gtk.Widget):
+    def scroll_into_view(self, widget: Gtk.WidgetBase):
         if self.viewport is not None:
             self.viewport.scroll_to(widget)
 
@@ -109,20 +108,20 @@ class WidgetI3Workspaces(
             self.cache[text] = super().rewrite(text)
         return self.cache[text]
 
-    def set_empty_idle(self, child: Gtk.Widget) -> None:
+    def set_empty_idle(self, child: Gtk.WidgetBase) -> None:
         child.set_visible(False)
         child.remove_css_class("focused")
         child.remove_css_class("previous")
         child.remove_css_class("urgent")
         return GLib.SOURCE_REMOVE
 
-    def set_focused_idle(self, child: Gtk.Widget) -> None:
+    def set_focused_idle(self, child: Gtk.WidgetBase) -> None:
         child.add_css_class("focused")
         child.set_visible(True)
         self.scroll_into_view(child)
         return GLib.SOURCE_REMOVE
 
-    def set_urgent_idle(self, child: Gtk.Widget) -> None:
+    def set_urgent_idle(self, child: Gtk.WidgetBase) -> None:
         if child.has_css_class("urgent"):
             child.remove_css_class("urgent")
         else:
@@ -131,19 +130,19 @@ class WidgetI3Workspaces(
             self.scroll_into_view(child)
         return GLib.SOURCE_REMOVE
 
-    def add_css_class_idle(self, child: Gtk.Widget, css_class: str) -> None:
+    def add_css_class_idle(self, child: Gtk.WidgetBase, css_class: str) -> None:
         child.add_css_class(css_class)
         return GLib.SOURCE_REMOVE
 
-    def remove_css_class_idle(self, child: Gtk.Widget, css_class: str) -> None:
+    def remove_css_class_idle(self, child: Gtk.WidgetBase, css_class: str) -> None:
         child.remove_css_class(css_class)
         return GLib.SOURCE_REMOVE
 
-    def set_name_idle(self, child: Gtk.Widget, name: str) -> None:
+    def set_name_idle(self, child: Gtk.WidgetBase, name: str) -> None:
         child.set_name(name)
         return GLib.SOURCE_REMOVE
 
-    def set_child_label_idle(self, child: Gtk.Widget, label: str) -> None:
+    def set_child_label_idle(self, child: Gtk.WidgetBase, label: str) -> None:
         child.set_label(label)
         return GLib.SOURCE_REMOVE
 

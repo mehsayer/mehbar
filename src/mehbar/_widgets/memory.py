@@ -1,9 +1,11 @@
 import psutil
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetMemoryUsage(Widget):
+class WidgetMemoryUsage(WidgetBase):
+    TYPE = "memory"
+
     async def run(self):
         while await self.sleep_interval():
             vmem = psutil.virtual_memory()

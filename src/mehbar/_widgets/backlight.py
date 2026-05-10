@@ -4,20 +4,22 @@ import anyio
 
 from mehbar._internals import BacklightACPI, BacklightDDCCI, BacklightInterface
 from mehbar.exceptions import BarConfigError
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetBacklight(Widget):
+class WidgetBacklight(WidgetBase):
     DRIVERS = {"acpi": BacklightACPI, "ddcci": BacklightDDCCI}
+    UNIQUE = False
+    TYPE = "backlight"
 
     def __init__(
         self,
-        driver: str,
         device: int | str,
-        step: int,
         interval: int,
         label_format: str,
         ramp: list[str] | None = None,
+        driver: str = "acpi",
+        step: int = 10,
     ):
         super().__init__(interval, label_format, ramp)
 
@@ -28,30 +30,28 @@ class WidgetBacklight(Widget):
         self.driver = self.DRIVERS[driver](device)
 
         self.ramp = ramp
+        self.ramps = []
 
         self.step = max(step, 1)
 
         self.sstream, self.rstream = anyio.create_memory_object_stream[int](8)
-
-        self.ramps = []
 
         self.onscroll_call(
             partial(self.elt_run_sync, self._change_level, self.step),
             partial(self.elt_run_sync, self._change_level, -self.step),
         )
 
-    async def _build_ramps(self, driver: BacklightInterface):
+    def _build_ramps(self, driver: BacklightInterface):
 
-        max_level = driver.device.max_level
+        if self.ramp is not None:
+            max_level = driver.device.max_level
 
-        for level in range(max_level + 1):
-            ramp_val = str()
+            for level in range(max_level + 1):
+                if self.ramp and (nramp := len(self.ramp)) > 0:
+                    ramp_idx = int(min(level, max_level - 1) / (max_level / nramp))
+                    ramp_val = self.ramp[ramp_idx]
 
-            if self.ramp is not None and (nramp := len(self.ramp)) > 0:
-                ramp_idx = int(min(level, max_level - 1) / (max_level / nramp))
-                ramp_val = self.ramp[ramp_idx]
-
-            self.ramps.append(ramp_val)
+                    self.ramps.append(ramp_val)
 
     def _change_level(self, level: int):
         try:
@@ -86,13 +86,15 @@ class WidgetBacklight(Widget):
 
                     norm_level = int(max(0, min(display_level, max_level)))
 
-                    self.format_label_idle(
-                        ramp=self.ramps[norm_level], level=norm_level
-                    )
+                    ramp_ = None
+                    if self.ramps:
+                        ramp_ = self.ramps[norm_level]
+
+                    self.format_label_idle(ramp=ramp_, level=norm_level)
 
     async def run(self):
         async with self.driver as bl_driver:
-            await self._build_ramps(bl_driver)
+            self._build_ramps(bl_driver)
 
             async with anyio.create_task_group() as grp:
                 grp.start_soon(self._poll, bl_driver)

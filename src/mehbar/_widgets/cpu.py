@@ -1,9 +1,11 @@
 import psutil
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetCPUPercentage(Widget):
+class WidgetCPUPercentage(WidgetBase):
+    TYPE = "cpu_usage"
+
     async def run(self):
         while await self.sleep_interval():
             percentage = round(psutil.cpu_percent())

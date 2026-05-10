@@ -1,16 +1,18 @@
 from i3ipc import Event, ModeEvent
 from i3ipc.aio import Connection
 
-from mehbar.widgets import I3ListenerMixin, RewriteMixin, Widget
+from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
 
 
-class WidgetI3Mode(I3ListenerMixin, RewriteMixin, Widget):
+class WidgetI3Mode(I3ListenerMixin, RewriteMixin, WidgetBase):
+    TYPE = "i3_mode"
+
     def __init__(
         self,
-        rewrite: dict[str, str],
         label_format: str,
-        always_show: bool,
         i3_conn: Connection,
+        always_show: bool = True,
+        rewrite: dict[str, str] | None = None,
     ):
         super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
         self.always_show = always_show

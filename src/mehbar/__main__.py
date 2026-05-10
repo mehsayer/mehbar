@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 from functools import partial
+from types import TracebackType
 
 from mehbar import MEHBAR_EXC_INFO, MEHBAR_LOG_LEVEL
 
@@ -12,6 +13,8 @@ class LevelAwareLoggingFormatter(logging.Formatter):
     LEVEL_FORMATS = {
         logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x, <%(taskName)s>): %(message)s"
     }
+
+    NO_EXC_INFO = (None, None, None)
 
     def __init__(
         self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None
@@ -29,6 +32,9 @@ class LevelAwareLoggingFormatter(logging.Formatter):
 
     def usesTime(self):
         return True
+
+    def formatException(self, ei):
+        return super().formatException(ei) if ei != self.NO_EXC_INFO else None
 
     def formatMessage(self, record: logging.LogRecord):
         return self._styles[record.levelno].format(record)

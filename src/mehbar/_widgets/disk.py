@@ -1,10 +1,14 @@
+from pathlib import Path
+
 import psutil
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetDiskUsage(Widget):
-    def __init__(self, interval: int, label_format: str, path: str):
+class WidgetDiskUsage(WidgetBase):
+    TYPE = "disk"
+
+    def __init__(self, interval: int, label_format: str, path: str | Path = "/"):
         super().__init__(interval, label_format)
         self.path = path
 

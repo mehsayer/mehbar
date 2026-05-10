@@ -4,10 +4,12 @@ import socket
 import time
 
 from mehbar.tools import FormattableTimeDelta
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetSession(Widget):
+class WidgetSession(WidgetBase):
+    TYPE = "session"
+
     def __init__(self, interval: int, label_format: str):
         super().__init__(interval, label_format)
 

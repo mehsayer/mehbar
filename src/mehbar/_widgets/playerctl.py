@@ -5,7 +5,7 @@ from typing import Any
 import anyio
 import gi
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 gi.require_version("Playerctl", "2.0")
 
@@ -15,7 +15,7 @@ from mehbar.exceptions import BarConfigError
 from mehbar.tools import OptionalFormatter
 
 
-class PlayerctlButton(Widget):
+class PlayerctlButton(WidgetBase):
     def __init__(self, name: str, label: str, label_format: str | None = None):
         super().__init__(0, label_format)
 
@@ -35,23 +35,45 @@ class WidgetPlayerCtl(Gtk.Box):
     MAX_SCROLL_SPEED = 100
     MIN_SCROLL_SPEED = 1
 
-    SUPPORTED_MODULES = [
-        "next",
-        "play_pause",
-        "previous",
-        "seek_back",
-        "seek_forward",
-        "title",
-        "volume",
-        "time",
-        "shuffle",
-    ]
+    TYPE = "playerctl"
+
+    MODULES = (
+        [
+            {"type": "previous", "label": "prev"},
+            {"type": "seek_back", "label": "rw"},
+            {
+                "type": "shuffle",
+                "label_on": "shuffle",
+                "label_off": "no shuffle",
+            },
+            {
+                "type": "play_pause",
+                "label_play": "play",
+                "label_pause": "pause",
+            },
+            {"type": "seek_forward", "label": "ff"},
+            {"type": "next", "label": "next"},
+            {
+                "type": "title",
+                "label_empty": "-----",
+                "ticker": True,
+                "scroll_speed": 10,
+                "scroll_width": 128,
+                "label_format": "{artist} - {album} - {title}",
+            },
+            {
+                "type": "time",
+                "label_empty": "--:--",
+                "label_format": "{current}/{total}",
+            },
+        ],
+    )
 
     def __init__(
         self,
-        modules: list[dict[str, Any]],
         player_names: list[str],
-        always_show: bool = False,
+        modules: list[dict[str, Any]] | None,
+        always_show: bool = True,
         tick_ms: int = 500,
         **kwargs,
     ):
@@ -106,9 +128,18 @@ class WidgetPlayerCtl(Gtk.Box):
         self.btn_shuffle = None
         scroll_speed = self.MIN_SCROLL_SPEED
 
+        if modules is None or not modules:
+            modules = self.MODULES
+
+        supported_mods = set()
+
+        for supported_mod in self.MODULES:
+            if (supported_mod_type := supported_mod.get("type")) is not None:
+                supported_mods.add(supported_mod_type)
+
         for module in modules:
             mod_type = module.get("type")
-            if mod_type not in self.SUPPORTED_MODULES:
+            if mod_type not in supported_mods:
                 continue
 
             match mod_type:

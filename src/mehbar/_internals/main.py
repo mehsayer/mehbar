@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
+
 from __future__ import annotations
 
 import importlib
@@ -7,7 +8,6 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Callable
 from ctypes import CDLL
 from functools import partial
 from inspect import Parameter, signature
@@ -45,40 +45,16 @@ try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gdk", "4.0")
     gi.require_version("Gtk4LayerShell", "1.0")
+    gi.require_version("GdkPixbuf", "2.0")
 except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell
 
-from mehbar._widgets import (
-    WidgetBacklight,
-    WidgetBattery,
-    WidgetBluetooth,
-    WidgetCPUPercentage,
-    WidgetDateTime,
-    WidgetDiskUsage,
-    WidgetExecRepeat,
-    WidgetExecTail,
-    WidgetFanSpeed,
-    WidgetI3KeyboardLayout,
-    WidgetI3Mode,
-    WidgetI3Scratchpad,
-    WidgetI3Window,
-    WidgetI3Workspaces,
-    WidgetMemoryUsage,
-    WidgetNetworkRate,
-    WidgetPlayerCtl,
-    WidgetPulseVolume,
-    WidgetSession,
-    WidgetStatic,
-    WidgetTemperature,
-    WidgetWifiSignal,
-    WidgetWired,
-)
+import mehbar._widgets as builtin_widgets
 from mehbar.exceptions import BarConfigError
-from mehbar.tools import overlay_dict_r
-from mehbar.widgets import Widget
+from mehbar.widget import IconManager, WidgetBase
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
 
@@ -91,7 +67,7 @@ def get_config_home() -> Path:
     return cfg_home / "mehbar"
 
 
-def load_config() -> dict[str, Any]:
+def load_config() -> dict[str, Any]:  # noqa: MC0001
     ret = {}
 
     cfg_home = get_config_home()
@@ -105,6 +81,7 @@ def load_config() -> dict[str, Any]:
         "jsonc": "config.jsonc",
         "json": "config.json",
     }
+    # TODO: add yaml, jsonc
 
     if (envvar_parser := os.getenv("MEHBAR_CONFIG_PARSER_MODULE")) is not None:
         if envvar_parser in import_map:
@@ -177,179 +154,32 @@ def get_primary_mon_width() -> int:
 
 
 class MehBarGUI(Gtk.ApplicationWindow):
-    WIDGET_TYPE_MAP = {
-        "cpu_percentage": {
-            "class": WidgetCPUPercentage,
-            "unique": True,
-            "kwargs": {
-                "interval": 5,
-            },
-        },
-        "temperature": {
-            "class": WidgetTemperature,
-            "unique": False,
-            "kwargs": {
-                "interval": 5,
-                "max_temp": 100,
-                "source": 0,
-            },
-        },
-        "fan_speed": {
-            "class": WidgetFanSpeed,
-            "unique": False,
-            "kwargs": {
-                "interval": 5,
-                "max_speed": 5000,
-                "source": None,
-            },
-        },
-        "datetime": {
-            "class": WidgetDateTime,
-            "unique": False,
-            "kwargs": {
-                "interval": 10,
-            },
-        },
-        "exec_repeat": {
-            "class": WidgetExecRepeat,
-            "unique": False,
-            "kwargs": {
-                "interval": 5,
-                "max_lps": 5,
-            },
-        },
-        "exec_tail": {
-            "class": WidgetExecTail,
-            "unique": False,
-            "kwargs": {
-                "max_lps": 5,
-            },
-        },
-        "memory": {
-            "class": WidgetMemoryUsage,
-            "unique": True,
-            "kwargs": {"interval": 12},
-        },
-        "disk": {
-            "class": WidgetDiskUsage,
-            "unique": False,
-            "kwargs": {"interval": 60, "path": "/"},
-        },
-        "session": {
-            "class": WidgetSession,
-            "unique": False,
-            "kwargs": {"interval": 5},
-        },
-        "battery": {
-            "class": WidgetBattery,
-            "unique": False,
-            "kwargs": {"interval": 5},
-        },
-        "backlight": {
-            "class": WidgetBacklight,
-            "unique": False,
-            "kwargs": {"interval": 5, "driver": "acpi", "step": 10},
-        },
-        "bluetooth": {
-            "class": WidgetBluetooth,
-            "unique": True,
-            "kwargs": {"interval": 5},
-        },
-        "playerctl": {
-            "class": WidgetPlayerCtl,
-            "unique": True,
-            "kwargs": {
-                "always_show": True,
-                "player_names": [],
-                "modules": [
-                    {"type": "previous", "label": "prev"},
-                    {"type": "seek_back", "label": "rw"},
-                    {
-                        "type": "shuffle",
-                        "label_on": "shuffle",
-                        "label_off": "no shuffle",
-                    },
-                    {
-                        "type": "play_pause",
-                        "label_play": "play",
-                        "label_pause": "pause",
-                    },
-                    {"type": "seek_forward", "label": "ff"},
-                    {"type": "next", "label": "next"},
-                    {
-                        "type": "title",
-                        "label_empty": "-----",
-                        "ticker": True,
-                        "scroll_speed": 10,
-                        "scroll_width": 128,
-                        "label_format": "{artist} - {album} - {title}",
-                    },
-                    {
-                        "type": "time",
-                        "label_empty": "--:--",
-                        "label_format": "{current}/{total}",
-                    },
-                ],
-            },
-        },
-        "pulseaudio_volume": {
-            "class": WidgetPulseVolume,
-            "unique": True,
-            "kwargs": {"max_vol": 100, "vol_delta": 10, "sink_name": "@DEFAULT_SINK@"},
-        },
-        "static": {
-            "class": WidgetStatic,
-            "unique": False,
-        },
-        "i3_kblayout": {
-            "class": WidgetI3KeyboardLayout,
-            "unique": True,
-        },
-        "i3_mode": {
-            "class": WidgetI3Mode,
-            "unique": True,
-            "kwargs": {"always_show": True},
-        },
-        "i3_scratchpad": {
-            "class": WidgetI3Scratchpad,
-            "unique": True,
-            "kwargs": {"always_show": True},
-        },
-        "i3_workspaces": {
-            "class": WidgetI3Workspaces,
-            "unique": True,
-            "kwargs": {
-                "always_show": ["1", "2", "3", "4"],
-                "scroll_width": 0,
-                "scroll_speed": 10,
-                "max_workspaces": 10,
-                "rewrite": {},
-            },
-        },
-        "i3_window": {
-            "class": WidgetI3Window,
-            "unique": True,
-            "kwargs": {"always_show": True},
-        },
-        "wifi": {
-            "class": WidgetWifiSignal,
-            "unique": True,
-            "kwargs": {"interval": 1},
-        },
-        "wired": {
-            "class": WidgetWired,
-            "unique": True,
-            "kwargs": {"interval": 1},
-        },
-        "network_rate": {
-            "class": WidgetNetworkRate,
-            "unique": False,
-            "kwargs": {
-                "interval": 1,
-                "conv_map": {"Kb/s": 1024, "Mb/s": 1024**2, "b/s": 1},
-            },
-        },
-    }
+    WIDGETS = [
+        "WidgetBacklight",
+        "WidgetBattery",
+        "WidgetBluetooth",
+        "WidgetCPUPercentage",
+        "WidgetDateTime",
+        "WidgetDiskUsage",
+        "WidgetExecRepeat",
+        "WidgetExecTail",
+        "WidgetFanSpeed",
+        "WidgetFile",
+        "WidgetI3KeyboardLayout",
+        "WidgetI3Mode",
+        "WidgetI3Scratchpad",
+        "WidgetI3Window",
+        "WidgetI3Workspaces",
+        "WidgetMemoryUsage",
+        "WidgetNetworkRate",
+        "WidgetPlayerCtl",
+        "WidgetPulseVolume",
+        "WidgetSession",
+        "WidgetStatic",
+        "WidgetTemperature",
+        "WidgetWifi",
+        "WidgetWired",
+    ]
 
     BASE_CSS = b"""
         window.background {
@@ -399,32 +229,49 @@ class MehBarGUI(Gtk.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.wtype_map = {}
+
+        for widget_cls_name in self.WIDGETS:
+            if (cl := getattr(builtin_widgets, widget_cls_name, None)) is not None:
+                if (wtype := getattr(cl, "TYPE", None)) is None:
+                    raise BarConfigError(f"unknown widget type for class '{cl!s}'")
+
+                if wtype in self.wtype_map:
+                    raise BarConfigError(f"duplicate widget type '{wtype}'")
+
+                self.wtype_map[wtype] = cl
+
         self.i3_conn = None
-        self.widget_list = []
-        self._unique_widget_types = set()
+        self._unique_wtypes = set()
 
         self.config = load_config()
 
-        self.bar_config = self.config.get("bar")
+        bar_config = self.config.get("bar")
 
-        if not self.bar_config or self.bar_config is None:
+        self.icon_manager = IconManager(bar_config.get("icon_size", 12))
+
+        if (icons := self.config.get("icons")) is not None:
+            for name, path in icons.items():
+                self.icon_manager.load_image(name, path)
+
+        if not bar_config or bar_config is None:
             raise RuntimeError("no valid configuration available")
 
-        is_homogenous = self.bar_config.get("homogenous", self.DEFAULT_HOMOGENOUS)
+        is_homogenous = bar_config.get("homogenous", self.DEFAULT_HOMOGENOUS)
 
         anchor = self.ANCHOR_MAP.get(
-            self.bar_config.get("position", self.DEFAULT_ANCHOR), self.DEFAULT_ANCHOR
+            bar_config.get("position", self.DEFAULT_ANCHOR), self.DEFAULT_ANCHOR
         )
 
         layer = self.LAYER_MAP.get(
-            self.bar_config.get("layer", self.DEFAULT_LAYER), self.DEFAULT_LAYER
+            bar_config.get("layer", self.DEFAULT_LAYER), self.DEFAULT_LAYER
         )
 
-        height = self.bar_config.get("height", self.MIN_HEIGHT)
+        height = bar_config.get("height", self.MIN_HEIGHT)
 
-        total_width = self.bar_config.get("width", 0)
+        total_width = bar_config.get("width", 0)
 
-        gaps = self.bar_config.get("gaps", self.DEFAULT_GAPS)
+        gaps = bar_config.get("gaps", self.DEFAULT_GAPS)
 
         if len(gaps) == 2:
             gaps *= 2
@@ -478,127 +325,118 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         self.set_child(self.main_box)
 
-    def new_widget_for(self, w_name: str, **kwargs) -> Widget:
+    def _widget_class_for_type(self, wtype: str) -> WidgetBase:
 
+        if (widget_cls := self.wtype_map.get(wtype, None)) is None:
+            types = ", ".join(self.wtype_map.keys())
+            raise BarConfigError(f"widget type '{wtype}' is not one of: {types}")
+
+        widget_unique = getattr(widget_cls, "UNIQUE", True)
+
+        if widget_unique:
+            if wtype in self._unique_wtypes:
+                raise BarConfigError(f"windget of type '{wtype}' must be unique")
+            self._unique_wtypes.add(wtype)
+
+        return widget_cls
+
+    def new_widget_for(self, name: str, **kwargs) -> WidgetBase:
         widget = None
 
-        if w_name in self.SECTION_NAMES:
-            raise BarConfigError(f"name '{w_name}' is not allowed for widgets")
+        if (wtype := kwargs.pop("type", None)) is None:
+            raise BarConfigError("widget type not specified")
 
-        if (w_type := kwargs.pop("type", None)) is None:
-            raise BarConfigError("missing 'type' field in widget config")
-
-        if w_type not in self.WIDGET_TYPE_MAP:
-            available = ", ".join(self.WIDGET_TYPE_MAP.keys())
+        if name is None:
             raise BarConfigError(
-                f"unknown widget type: {w_type}. Available: {available}"
+                f"no configuration key 'name' for widget of type '{wtype}'"
+            )
+        if name in self.SECTION_NAMES:
+            raise BarConfigError(f"name '{name}' is not allowed for widgets")
+
+        widget_cls = self._widget_class_for_type(wtype)
+
+        max_width = kwargs.pop("max_width", 0)
+
+        width = kwargs.pop("width", 0)
+
+        onclick = kwargs.pop("onclick", None)
+
+        onscroll = kwargs.pop("onscroll", None)
+
+        args = set()
+
+        for name_, param in signature(widget_cls).parameters.items():
+            args.add(name_)
+            if name_ == "i3_conn":
+                kwargs[name_] = self.i3_conn
+
+            if name_ == "icon_manager":
+                kwargs[name_] = self.icon_manager
+
+            if param.default == Parameter.empty and name_ not in kwargs:
+                raise BarConfigError(
+                    f"no configuration key '{name_}' for widget '{name}'"
+                )
+
+        for del_arg in set(kwargs) - args:
+            del kwargs[del_arg]
+            logging.warning(
+                "ignoring unknown configuration key '%s' for widget '%s'",
+                del_arg,
+                name,
             )
 
-        w_unique = self.WIDGET_TYPE_MAP[w_type].get("unique", False)
+        widget = widget_cls(**kwargs)
 
-        if w_unique:
-            if w_type in self._unique_widget_types:
-                raise BarConfigError(f"windget of type '{w_type}' must be unique")
-            self._unique_widget_types.add(w_type)
+        widget.set_name(name)
 
-        w_class: Callable = self.WIDGET_TYPE_MAP[w_type]["class"]
+        if onclick is not None:
+            for button, cmdline in enumerate(onclick):
+                widget.onclick_exec(button, cmdline)
 
-        w_css_classes = kwargs.pop("classes", [])
+        if onscroll is not None:
+            widget.onscroll_exec(*onscroll)
 
-        _kwargs: dict[str, Any] = self.WIDGET_TYPE_MAP[w_type].get("kwargs", {})
-        overlay_dict_r(_kwargs, kwargs)
+        if width > 0:
+            widget.set_width_chars(width)
 
-        w_max_width = _kwargs.pop("max_width", 0)
-        w_width = _kwargs.pop("width", 0)
-
-        w_class_args = set()
-
-        for name, param in signature(w_class).parameters.items():
-            w_class_args.add(name)
-
-            if name != "kwargs":
-                if name == "i3_conn":
-                    _kwargs[name] = self.i3_conn
-
-                if param.default == Parameter.empty:
-                    assert name in _kwargs, f"No key {name} for widget of type {w_type}"
-
-        del_args = set()
-
-        for act_arg in _kwargs.keys():
-            if act_arg not in w_class_args:
-                del_args.add(act_arg)
-
-        for del_arg in del_args:
-            del _kwargs[del_arg]
-
-        w_class_args.clear()
-        del_args.clear()
-
-        if _kwargs.get("interval", 0) < 0:
-            raise BarConfigError(
-                "the value of 'interval' parameter must not be less than 0"
-            )
-
-        widget = w_class(**_kwargs)
-
-        if w_name is not None:
-            widget.set_name(w_name)
-
-        elif w_unique:
-            widget.set_name(w_type)
-
-        for css_class in w_css_classes:
-            widget.add_css_class(css_class)
-
-        if w_width > 0:
-            widget.set_width_chars(w_width)
-
-        if w_max_width > 0:
-            widget.set_max_width_chars(w_max_width)
+        if max_width > 0:
+            widget.set_max_width_chars(max_width)
 
         return widget
 
-    def _init_widgets(self):
-
-        for section in ["start", "center", "end"]:
-            box = getattr(self, f"{section}_box")
-
-            if section in self.config:
-                for w_name, kwargs in self.config[section].items():
-                    try:
-                        widget = self.new_widget_for(w_name, **kwargs)
-                    except BarConfigError as ex:
-                        w_type = kwargs.get("type", "unknown")
-                        logging.error(
-                            "disabling widget of type '%s', name '%s', reason: %s",
-                            w_type,
-                            w_name,
-                            ex,
-                        )
-                    else:
-                        self.widget_list.append(widget)
-                        box.append(widget)
-            else:
-                box.set_visible(False)
-
-    async def _run_widget(self, widget: Gtk.Widget, name: str | None = None):
+    async def _run_widget(self, widget: Gtk.WidgetBase, name: str | None = None):
         try:
             await widget.run_wrapper()
         except Exception as ex:
             widget.shutdown()
-            widget.set_visible(False)
-            widget.get_parent().remove(widget)
-            logging.error("disabling widget: %s, reason: %s", name, ex)
+            GLib.idle_add(widget.set_visible, False)
+            parent = widget.get_parent()
+            GLib.idle_add(parent.remove, widget)
+            logging.error("disabling widget '%s': %s", name, ex)
 
     async def run_widgets(self):
-
-        self._init_widgets()
-
         async with anyio.create_task_group() as grp:
-            for widget in self.widget_list:
-                name = widget.get_name()
-                grp.start_soon(self._run_widget, widget, name, name=name)
+            for section in self.SECTION_NAMES:
+                box = getattr(self, f"{section}_box")
+
+                if section in self.config:
+                    for name, kwargs in self.config[section].items():
+                        try:
+                            widget = self.new_widget_for(name, **kwargs)
+                        except BarConfigError as ex:
+                            wtype = kwargs.get("type", "unknown")
+                            logging.error(
+                                "disabling widget '%s' of type '%s': %s",
+                                name,
+                                wtype,
+                                ex,
+                            )
+                        else:
+                            GLib.idle_add(box.append, widget)
+                            grp.start_soon(self._run_widget, widget, name, name=name)
+                else:
+                    GLib.idle_add(box.set_visible, False)
 
 
 class MehBar(Gtk.Application):

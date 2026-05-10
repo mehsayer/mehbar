@@ -3,19 +3,21 @@ from functools import partial
 import anyio
 from pulsectl_asyncio import PulseAsync
 
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetPulseVolume(Widget):
+class WidgetPulseVolume(WidgetBase):
     CMD_BASE = 128
+
+    TYPE = "pulse_volume"
 
     def __init__(
         self,
-        sink_name: int,
-        max_vol: int,
-        vol_delta: int,
         label_format: str,
         ramp: list[str] | None = None,
+        sink_name: str = "@DEFAULT_SINK@",
+        max_vol: int = 100,
+        vol_delta: int = 10,
     ):
         super().__init__(0, label_format, ramp)
         self.sink_name = sink_name

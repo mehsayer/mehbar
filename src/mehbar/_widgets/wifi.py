@@ -9,11 +9,13 @@ from mehbar._internals import (
     WPASupplicantBackend,
 )
 from mehbar.exceptions import BarConfigError
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetWifiSignal(Widget):
+class WidgetWifi(WidgetBase):
     MAX_SIGNAL = 100
+
+    TYPE = "wifi"
 
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,

@@ -3,11 +3,12 @@ from itertools import batched
 import psutil
 
 from mehbar.tools import FormattableTimeDelta
-from mehbar.widgets import Widget
+from mehbar.widget import WidgetBase
 
 
-class WidgetBattery(Widget):
+class WidgetBattery(WidgetBase):
     MAX_CHARGE = 100
+    TYPE = "battery"
 
     def __init__(self, interval: int, label_format: str, ramp: list[str] | None = None):
         super().__init__(interval, label_format, ramp)
