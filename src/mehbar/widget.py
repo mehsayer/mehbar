@@ -5,7 +5,7 @@ import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
-from functools import cache, partial
+from functools import Placeholder, cache, lru_cache, partial, partialmethod
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -251,6 +251,7 @@ class RewriteMixin:
     def __init__(self, *args, rewrite: dict[str, str] | None, **kwargs):
         super().__init__(*args, **kwargs)
         self._rewrite = rewrite
+        self.rewrite = lru_cache(maxsize=32)(self.rewrite)
 
     def rewrite(self, text: str) -> str:
         result = text
@@ -281,7 +282,7 @@ class JSONInputMixin:
         super().__init__(*args, **kwargs)
         self.max_lps = max(min(max_lps, self.MAX_LPS), 1)
 
-    async def format_label_idle_json_async(self, json_str: str):
+    async def format_label_i_json_async(self, json_str: str):
         if json_str.strip():
             try:
                 val_map = json.loads(json_str)
@@ -296,7 +297,7 @@ class JSONInputMixin:
 
                     val_map["ramp"] = ramp_
 
-                self.format_label_idle(**val_map)
+                self.format_label_i(**val_map)
             except json.JSONDecodeError as ex:
                 logging.error("failed to parse JSON input: %s", ex)
         await anyio.sleep(0.1)
@@ -321,12 +322,12 @@ class WidgetBase(Gtk.Box):
         self.icon = Gtk.Image.new()
         self.icon.add_css_class("bar-widget-icon")
 
-        self.init_content = WidgetContent.parse(label_format)
+        self.content = WidgetContent.parse(label_format)
 
-        if self.init_content.icon_position == IconPosition.START:
+        if self.content.icon_position == IconPosition.START:
             self.append(self.icon)
             self.append(self.label)
-        elif self.init_content.icon_position == IconPosition.END:
+        elif self.content.icon_position == IconPosition.END:
             self.append(self.label)
             self.append(self.icon)
         else:
@@ -354,7 +355,7 @@ class WidgetBase(Gtk.Box):
         self._last_label_css_classes = set()
         self._last_icon_css_classes = set()
 
-        self.cache: dict[str, Any] = {}
+        # self.cache: dict[str, Any] = {}  # TODO: ?
         self.formatter = OptionalFormatter()
         self.interval = max(int(interval), 0)
 
@@ -362,15 +363,15 @@ class WidgetBase(Gtk.Box):
         self.max_ramp_level = max_ramp_level
         self.ramp_index_cache = {}
 
-        self.content_cache = {}
-
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
         self.label.set_single_line_mode(True)
 
         self.add_css_class("bar-widget")
 
-        self.set_icon(self.init_content.icon)
+        self.set_icon(self.content.icon)
+
+        self.get_content = lru_cache(maxsize=128)(self.get_content)
 
     async def sleep_interval(self) -> bool:
 
@@ -394,6 +395,19 @@ class WidgetBase(Gtk.Box):
         self.loop_token = anyio.lowlevel.current_token()
         await self.run()
 
+    def _get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
+
+        if ramp_level not in self.ramp_index_cache:
+            content = None
+
+            if ramp_level >= 0 and self.ramp is not None:
+                level_ = min(ramp_level, self.max_ramp_level - 1)
+                idx = int(level_ / (self.max_ramp_level / len(self.ramp)))
+                content = WidgetContent.parse(self.ramp[idx])
+
+            self.ramp_index_cache[ramp_level] = content
+        return self.ramp_index_cache[ramp_level]
+
     def _idle_run(self, func: Callable, *args: Any) -> bool:
         func(*args)
         return GLib.SOURCE_REMOVE
@@ -410,172 +424,137 @@ class WidgetBase(Gtk.Box):
     def idle_add_cb(self, func: Callable, cb: Callable):
         GLib.idle_add(self._idle_run_cb, func, cb)
 
-    def _add_css_classes(self, widget: Gtk.Widget, classes: set[str]):
-        for class_name in classes:
+    def _add_css_classes(self, widget: Gtk.Widget, names: set[str]):
+        for class_name in names:
             widget.add_css_class(class_name)
 
-    def _add_css_classes_idle(
-        self,
-        widget: Gtk.Widget,
-        classes: set[str],
-        store: set[str],
-    ):
-        if classes and "!none" not in classes and not classes.issubset(store):
-            self.idle_add_cb(
-                partial(self._add_css_classes, widget, classes),
-                partial(store.update, classes),
-            )
+    def _add_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
+        func = None
+        callback = None
 
-    def _rm_css_classes(self, widget: Gtk.Widget, classes: set[str]):
-        for class_name in classes:
+        if names and "!none" not in names and not names.issubset(store):
+            func = partial(self._add_css_classes, widget, names)
+            callback = partial(store.update, names)
+
+        if func is not None:
+            self.idle_add_cb(func, callback)
+
+    def _rm_css_classes(self, widget: Gtk.Widget, names: set[str]):
+        for class_name in names:
             widget.remove_css_class(class_name)
 
-    def _rm_css_classes_idle(
-        self,
-        widget: Gtk.Widget,
-        classes: set[str],
-        store: set[str],
-    ):
-        if not classes or "!none" in classes:
+    def _rm_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
+        func = None
+        callback = None
+        if not names or "!none" in names:
             if store:
-                self.idle_add_cb(
-                    partial(self._rm_css_classes, widget, store), store.clear
-                )
+                func = partial(self._rm_css_classes, widget, store)
+                callback = store.clear
         else:
-            self.idle_add_cb(
-                partial(self._rm_css_classes, widget, classes),
-                partial(store.difference_update, classes),
-            )
+            func = partial(self._rm_css_classes, widget, names)
+            callback = partial(store.difference_update, names)
 
-    def add_icon_css_classes_idle(self, classes: set[str]):
-        self._add_css_classes_idle(self.icon, classes, self._last_icon_css_classes)
+        if func is not None:
+            self.idle_add_cb(func, callback)
 
-    def remove_icon_css_classes_idle(self, classes: set[str] | None = None):
-        self._rm_css_classes_idle(self.icon, classes, self._last_icon_css_classes)
+    def add_icon_css_classes_i(self, names: set[str]):
+        self._add_css_classes_i(self.icon, names, self._last_icon_css_classes)
 
-    def replace_icon_css_classes_idle(self, classes: set[str]):
-        if classes and not classes.issubset(self._last_icon_css_classes):
-            self.remove_icon_css_classes_idle(classes)
-            self.add_icon_css_classes_idle(classes)
+    def remove_icon_css_classes_i(self, names: set[str] | None = None):
+        self._rm_css_classes_i(self.icon, names, self._last_icon_css_classes)
 
-    def add_label_css_classes_idle(self, classes: Sequence[str]):
-        pass
+    def replace_icon_css_classes_i(self, names: set[str]):
+        if names and not names.issubset(self._last_icon_css_classes):
+            self.remove_icon_css_classes_i(names)
+            self.add_icon_css_classes_i(names)
 
-    def remove_label_css_classes_idle(self, classes: Sequence[str] | None = None):
-        pass
+    def add_label_css_classes_i(self, names: set[str]):
+        self._add_css_classes_i(self.label, names, self._last_label_css_classes)
 
-    def replace_label_css_classes_idle(self, classes: Sequence[str]):
-        pass
+    def remove_label_css_classes_i(self, names: set[str] | None = None):
+        self._rm_css_classes_i(self.label, names, self._last_label_css_classes)
 
-    def add_css_classes_idle(self, classes: Sequence[str]):
-        pass
+    def replace_label_css_classes_i(self, names: set[str]):
+        if names and not names.issubset(self._last_label_css_classes):
+            self.remove_label_css_classes_i(names)
+            self.add_label_css_classes_i(names)
 
-    def remove_css_classes_idle(self, classes: set[str]):
-        pass
+    def add_css_classes_i(self, names: set[str]):
+        self._add_css_classes_i(self, names, self._last_css_classes)
 
-    def replace_css_classes_idle(self, classes: set[str]):
-        pass
+    def remove_css_classes_i(self, names: set[str] | None = None):
+        self._rm_css_classes_i(self, names, self._last_css_classes)
 
-    def set_content_idle(self, content: WidgetContent, **kwargs):
+    def replace_css_classes_i(self, names: set[str]):
+        if names and not names.issubset(self._last_css_classes):
+            self.remove_css_classes_i(names)
+            self.add_css_classes_i(names)
+
+    def _set_content_i(
+        self, content: WidgetContent | None, ramp_level: int = -1, **kwargs: str
+    ):
+
+        if content is None:
+            content = self.get_content(ramp_level, **kwargs)
+
         if content != self._last_content:
             if content.icon is not None:
-                self.set_icon_idle(content.icon)
+                self.set_icon_i(content.icon)
 
             if content.label_text is not None:
-                self.set_label_idle(content.label_text)
+                self.set_label_i(content.label_text)
 
             if content.widget_classes:
-                self.replace_css_classes_idle(content.widget_classes)
+                self.replace_css_classes_i(content.widget_classes)
 
             if content.label_classes:
-                self.replace_label_css_classes_idle(content.label_classes)
+                self.replace_label_css_classes_i(content.label_classes)
 
             if content.icon_classes:
-                self.replace_icon_css_classes_idle(content.icon_classes)
+                self.replace_icon_css_classes_i(content.icon_classes)
+
+    set_content_i = partialmethod(_set_content_i, Placeholder, -1)
+
+    set_new_content_i = partialmethod(_set_content_i, None)
 
     def set_icon(self, name: str):
         if name != self._last_icon:
             self._last_icon = name
             self.icon.set_from_paintable(self.icon_manager.get_texture(name))
 
-    def set_icon_idle(self, name: str):
+    def set_icon_i(self, name: str):
         self.idle_add(self.set_icon, name)
-
-    def _get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
-
-        if ramp_level not in self.ramp_index_cache:
-            content = None
-
-            if ramp_level >= 0 and self.ramp is not None:
-                idx = int(
-                    min(ramp_level, self.max_ramp_level - 1)
-                    / (self.max_ramp_level / len(self.ramp))
-                )
-                content = WidgetContent.parse(self.ramp[idx])
-
-            self.ramp_index_cache[ramp_level] = content
-
-        return self.ramp_index_cache[ramp_level]
 
     def get_content(self, ramp_level: int = -1, **kwargs: str) -> WidgetContent:
 
-        key = pickle.dumps(kwargs, protocol=pickle.HIGHEST_PROTOCOL)
+        icon = None
+        icon_classes = None
+        label_classes = None
+        widget_classes = None
 
-        if key not in self.content_cache:
-            icon = None
-            label_text = None
-            tooltip_text = None
-            icon_classes = None
-            label_classes = None
-            widget_classes = None
+        if (ramp_content := self._get_ramp(ramp_level)) is not None:
+            icon = ramp_content.icon
+            icon_classes = ramp_content.icon_classes
 
-            if (ramp_content := self._get_ramp(ramp_level)) is not None:
-                icon = ramp_content.icon
-                icon_classes = ramp_content.icon_classes
+            if self.content.label_text is not None:
+                kwargs["ramp"] = ramp_content.label_text
 
-                if self.init_content.label_text is not None:
-                    label_text = self.formatter.vformat(
-                        self.init_content.label_text,
-                        None,
-                        {**kwargs, "ramp": ramp_content.label_text},
-                    )
+            icon_classes = ramp_content.icon_classes
+            label_classes = ramp_content.label_classes
+            widget_classes = ramp_content.widget_classes
 
-                if self.init_content.tooltip_text is not None:
-                    tooltip_text = self.formatter.vformat(
-                        self.init_content.tooltip_text,
-                        None,
-                        {**kwargs, "ramp": ramp_content.tooltip_text},
-                    )
+        label_text = self.formatter.vformat(self.content.label_text, None, kwargs)
+        tooltip_text = self.formatter.vformat(self.content.label_text, None, kwargs)
 
-                icon_classes = ramp_content.icon_classes
-                label_classes = ramp_content.label_classes
-                widget_classes = ramp_content.widget_classes
-            else:
-                if self.init_content.label_text is not None:
-                    label_text = self.formatter.vformat(
-                        self.init_content.label_text,
-                        None,
-                        kwargs,
-                    )
-                if self.init_content.tooltip_text is not None:
-                    tooltip_text = self.formatter.vformat(
-                        self.init_content.tooltip_text,
-                        None,
-                        kwargs,
-                    )
-
-            logging.debug("GETTING CONTENT")
-
-            self.content_cache[key] = self.init_content.derive(
-                icon,
-                None,
-                label_text,
-                tooltip_text,
-                icon_classes,
-                label_classes,
-                widget_classes,
-            )
-        return self.content_cache[key]
+        return self.content.derive(
+            icon,
+            None,
+            label_text,
+            tooltip_text,
+            icon_classes,
+            label_classes,
+            widget_classes,
+        )
 
     def _onclick(self, button: int, action: ActionInterface):
         if button >= 0 and action is not None:
@@ -599,20 +578,13 @@ class WidgetBase(Gtk.Box):
             controller.connect("scroll", _scroll)
             self.add_controller(controller)
 
-    def vsformat(self, **kwargs):
-        return self.formatter.format(self.init_content.label_text, **kwargs)
-
-    def set_visible_idle(self, state: bool):
+    def set_visible_i(self, state: bool):
         self.idle_add(self.set_visible, state)
 
-    def set_label_idle(self, text: str):
+    def set_label_i(self, text: str):
         if text != self._last_label_text:
             self._last_label_text = text
             self.idle_add(self.set_label, text)
-
-    def format_label_idle(self, **kwargs):
-        self.set_label_idle(self.vsformat(**kwargs).strip())
-        # TODO: remove this
 
     def onclick_call(self, button: int, func: Callable, *args, **kwargs):
         self._onclick(button, CallableAction(func, *args, **kwargs))
@@ -642,17 +614,3 @@ class JSONInputWidgetBase(JSONInputMixin, WidgetBase):
         max_lps: int = 0,
     ):
         super().__init__(interval, label_format, ramp, max_lps=max_lps)
-
-        self.ramps = []
-
-        if ramp is not None:
-            for level in range(self.MAX_RAMP + 1):
-                ramp_val = str()
-
-                if ramp and (nramp := len(ramp)) > 0:
-                    ramp_idx = int(
-                        min(level, self.MAX_RAMP - 1) / (self.MAX_RAMP / nramp)
-                    )
-                    ramp_val = ramp[ramp_idx]
-
-                    self.ramps.append(ramp_val)

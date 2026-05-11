@@ -22,6 +22,9 @@ class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, WidgetBase):
             rewrite=rewrite,
             i3_conn=i3_conn,
         )
+        self.layout_cache = {}
+
+        self._last_layout_name = None
 
     async def run(self):
         for i3_i in await (await self.get_i3_conn()).get_inputs():
@@ -32,14 +35,13 @@ class WidgetI3KeyboardLayout(I3ListenerMixin, RewriteMixin, WidgetBase):
         def _callback_kb_layout(_, event: InputEvent):
             evinput = event.input
             if evinput.type == "keyboard":
-                if self._last_value != evinput.xkb_active_layout_name:
-                    self._last_value = evinput.xkb_active_layout_name
+                if self._last_layout_name != evinput.xkb_active_layout_name:
+                    self._last_layout_name = evinput.xkb_active_layout_name
                     self._push_layout(evinput.xkb_active_layout_name)
 
         (await self.get_i3_conn()).on(Event.INPUT, _callback_kb_layout)
 
     def _push_layout(self, raw_layout: str):
-        if raw_layout not in self.cache:
-            layout = self.rewrite(raw_layout)
-            self.cache[raw_layout] = layout
-        self.format_label_idle(layout=self.cache[raw_layout])
+        if raw_layout not in self.layout_cache:
+            self.layout_cache[raw_layout] = self.rewrite(raw_layout)
+        self.set_new_content_i(layout=self.layout_cache[raw_layout])

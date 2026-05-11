@@ -8,4 +8,4 @@ class WidgetDateTime(WidgetBase):
 
     async def run(self):
         while await self.sleep_interval():
-            self.format_label_idle(datetime=datetime.now())
+            self.set_new_content_i(datetime=datetime.now())

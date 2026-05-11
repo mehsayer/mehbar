@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 
 import anyio
@@ -109,4 +108,4 @@ class WidgetTemperature(WidgetBase):
     async def run(self):
         while await self.sleep_interval():
             content = await self._coro_get_content()
-            self.set_content_idle(content)
+            self.set_content_i(content)
