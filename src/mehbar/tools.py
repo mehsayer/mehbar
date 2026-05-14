@@ -1,26 +1,28 @@
 import hashlib
 import string
-import weakref
-from functools import lru_cache, partial, wraps
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-# def weak_lru_cache(maxsize: int = 128, typed: bool = False):
-#     'LRU Cache decorator that keeps a weak reference to "self"'
 
-#     def wrapper(func):
+def next_prime(num: int, offset: int = 0):
+    num += offset
 
-#         @lru_cache(maxsize, typed)
-#         def _func(_self, *args, **kwargs):
-#             return func(_self(), *args, **kwargs)
+    while not is_prime(num):
+        num += 1
+    return num
 
-#         @wraps(func)
-#         def inner(self, *args, **kwargs):
-#             return _func(weakref.ref(self), *args, **kwargs)
 
-#         return inner
-
-#     return wrapper
+def is_prime(num: int):
+    if num <= 1:
+        ret = False
+    else:
+        ret = True
+        for i in range(2, int(num**0.5) + 1):
+            if num % i == 0:
+                ret = False
+                break
+    return ret
 
 
 def overlay_dict_r(

@@ -1,7 +1,9 @@
 import json
 import logging
 import pickle
+import random
 import re
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
@@ -20,7 +22,7 @@ from mehbar.actions import (
     GestureMouseClick,
 )
 from mehbar.exceptions import WidgetTerminated
-from mehbar.tools import OptionalFormatter, md5sum_sync
+from mehbar.tools import OptionalFormatter, md5sum_sync, next_prime
 
 
 class IconPosition(Enum):
@@ -215,33 +217,61 @@ class IconManager:
 
         self.theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
 
-    def load_image(self, name: str, path: str | Path):
+    def _get_themed_icon(self, icon_id: str) -> Gdk.Paintable | None:
+        paintable = None
 
-        if isinstance(path, str) and path.startswith("theme:"):
-            paintable = self.theme.lookup_icon(
-                path.lstrip("theme:").strip(),
-                None,
-                self.pixel_size,
-                1,
-                Gtk.TextDirection.NONE,
-                Gtk.IconLookupFlags.NONE,
+        paintable = self.theme.lookup_icon(
+            icon_id,
+            None,
+            self.pixel_size,
+            1,
+            Gtk.TextDirection.NONE,
+            Gtk.IconLookupFlags.NONE,
+        )
+
+        if paintable:
+            paintable = paintable.get_current_image()
+
+        return paintable
+
+    def _get_file_icon(self, path: str | Path) -> Gdk.Paintable | None:
+
+        paintable = None
+
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                path, -1, self.pixel_size, preserve_aspect_ratio=True
             )
+            paintable = Gdk.Texture.new_for_pixbuf(pixbuf)
 
             if paintable:
-                self.store[name] = paintable.get_current_image()
-        else:
-            cksum = md5sum_sync(path)
+                paintable = paintable.get_current_image()
 
-            if cksum in self.cksums and self.cksums[cksum] in self.store:
-                self.store[name] = self.store[self.cksums[cksum]]
-            else:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                    path, -1, self.pixel_size, preserve_aspect_ratio=True
-                )
-                self.store[name] = Gdk.Texture.new_for_pixbuf(
-                    pixbuf
-                ).get_current_image()
-                self.cksums[cksum] = name
+        except Exception:
+            paintable = self._get_themed_icon("image-missing")
+
+        return paintable
+
+    def load_icon(self, name: str, path: str | Path):
+
+        paintable = None
+
+        if isinstance(path, str) and path.startswith("theme:"):
+            paintable = self._get_themed_icon(path.lstrip("theme:").strip())
+        else:
+            try:
+                cksum = md5sum_sync(path)
+
+                if cksum in self.cksums and self.cksums[cksum] in self.store:
+                    self.store[name] = self.store[self.cksums[cksum]]
+                else:
+                    paintable = self._get_file_icon(path)
+                    self.cksums[cksum] = name
+            except Exception:
+                logging.error("unable to load icon '%s' from file '%s'", name, path)
+                paintable = self._get_themed_icon("image-missing")
+
+        self.store[name] = paintable
 
     def get_texture(self, name: str) -> Gdk.Paintable:
         return self.store[name]
@@ -305,6 +335,7 @@ class JSONInputMixin:
 
 class WidgetBase(Gtk.Box):
     UNIQUE = True
+    INTERVAL_OFFSET = 0.128
 
     def __init__(
         self,
@@ -369,16 +400,19 @@ class WidgetBase(Gtk.Box):
 
         self.add_css_class("bar-widget")
 
-        self.set_icon(self.content.icon)
+        # self.set_icon(self.content.icon)
 
         self.get_content = lru_cache(maxsize=128)(self.get_content)
 
     async def sleep_interval(self) -> bool:
-
         if self._init_loop:
             if self.interval > 0:
                 self._init_loop = True
-                await anyio.sleep(self.interval)
+
+                interval_offset = random.random() % self.INTERVAL_OFFSET
+                interval = next_prime((self.interval + interval_offset) * 1000) / 1000
+
+                await anyio.sleep(interval)
             else:
                 return False
         else:

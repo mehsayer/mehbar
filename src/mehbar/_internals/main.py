@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import copy
 import importlib
 import logging
 import os
@@ -11,6 +13,7 @@ import sys
 from ctypes import CDLL
 from functools import partial
 from inspect import Parameter, signature
+from itertools import pairwise
 from pathlib import Path
 from threading import Thread
 from typing import Any
@@ -52,11 +55,33 @@ except ValueError as ex:
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell
 
+# # // Detect if we are using a dark theme
+# #     GSettings *settings = g_settings_new("org.gnome.desktop.interface");
+# #     gchar *color_scheme = g_settings_get_string(settings, "color-scheme");
+# #     gboolean bDarkTheme = (g_strcmp0(color_scheme, "prefer-dark") == 0);
+#     g_free(color_scheme);
+#     g_object_unref(settings);
 import mehbar._widgets as builtin_widgets
 from mehbar.exceptions import BarConfigError
+from mehbar.tools import next_prime, overlay_dict_r
 from mehbar.widget import IconManager, WidgetBase
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
+
+INFINITY = float("inf")
+
+CONFIG_PARSER_MAP = {
+    "tomli": "toml",
+    "toml": "toml",
+    "tomllib": "toml",
+    "json5": "json5",
+    "pyjson5": "json5",
+    "jsonc": "jsonc",
+    "json": "json",
+    "yaml": "yaml",
+}
+
+COLOR_SCHEMES = ["light", "dark", "system"]
 
 
 def get_config_home() -> Path:
@@ -67,21 +92,44 @@ def get_config_home() -> Path:
     return cfg_home / "mehbar"
 
 
-def load_config() -> dict[str, Any]:  # noqa: MC0001
+def get_system_cs() -> str:
+    ret = None
+
+    if (env_cs := os.getenv("MEHBAR_COLOR_SCHEME")) is COLOR_SCHEMES:
+        ret = env_cs
+    else:
+        gsettings_schema = "org.gnome.desktop.interface"
+
+        if Gio.SettingsSchemaSource.get_default().lookup(gsettings_schema) is not None:
+            gsettings = Gio.Settings.new(gsettings_schema)
+
+            gsettings_cs = gsettings.get_string("color-scheme")
+            if gsettings_cs == "prefer-dark":
+                ret = "dark"
+            elif gsettings_cs == "prefer-light":
+                ret = "light"
+        if ret is None:
+            try:
+                gi.require_version("Adw", "1")
+                from gi.repository import Adw
+
+                style_mgr = Adw.StyleManager.get_default()
+                ret = "dark" if style_mgr.get_dark() else "light"
+            except (ImportError, ValueError):
+                logging.error(
+                    "cannot determine current color scheme, will use 'system'"
+                )
+    if ret is None:
+        ret = "system"
+    return ret
+
+
+def load_config(
+    cfg_home: Path, theme: str | None, color_scheme: str | None
+) -> dict[str, Any]:  # noqa: MC0001
     ret = {}
 
-    cfg_home = get_config_home()
-
-    import_map = {
-        "tomli": "config.toml",
-        "toml": "config.toml",
-        "tomllib": "config.toml",
-        "json5": "config.json5",
-        "pyjson5": "config.json5",
-        "jsonc": "config.jsonc",
-        "json": "config.json",
-    }
-    # TODO: add yaml, jsonc
+    import_map = copy.copy(CONFIG_PARSER_MAP)
 
     if (envvar_parser := os.getenv("MEHBAR_CONFIG_PARSER_MODULE")) is not None:
         if envvar_parser in import_map:
@@ -92,22 +140,45 @@ def load_config() -> dict[str, Any]:  # noqa: MC0001
     tried = []
     failed = []
 
-    for module_name, config_file_name in import_map.items():
-        cfg_file = cfg_home / config_file_name
+    cs_suffixes = [""]
 
-        if cfg_file.is_file():
-            tried.append((cfg_file, module_name))
-            try:
-                parser = importlib.import_module(module_name)
+    if color_scheme is not None:
+        cs_suffixes.append("-" + color_scheme)
 
-                with open(cfg_file, "rb") as fhandle:
-                    ret = parser.load(fhandle)
+    theme_suffixes = [""]
 
-                if ret:
-                    logging.debug("loaded '%s' using '%s'", cfg_file, module_name)
-                    break
-            except Exception as ex:
-                failed.append((cfg_file, module_name, ex))
+    if theme is not None:
+        theme_suffixes.append("-" + theme)
+
+    for module_name, config_ext in import_map.items():
+        read_ok = False
+        for cs_suffix in cs_suffixes:
+            for theme_suffix in theme_suffixes:
+                parsed = {}
+
+                cfg_file = cfg_home / f"config{theme_suffix}{cs_suffix}.{config_ext}"
+
+                if cfg_file.is_file():
+                    tried.append((cfg_file, module_name))
+                    try:
+                        parser = importlib.import_module(module_name)
+                        parser_func = getattr(parser, "safe_load", parser.load)
+
+                        with open(cfg_file, "rb") as fhandle:
+                            parsed = parser_func(fhandle)
+
+                        if parsed:
+                            read_ok = True
+                            logging.debug(
+                                "loaded '%s' using '%s'", cfg_file, module_name
+                            )
+
+                            overlay_dict_r(ret, parsed)
+
+                    except Exception as ex:
+                        failed.append((cfg_file, module_name, ex))
+        if read_ok:
+            break
 
     if not ret:
         if failed:
@@ -128,16 +199,52 @@ def load_config() -> dict[str, Any]:  # noqa: MC0001
     return ret
 
 
-def load_css() -> bytes:
-    ret = b"\n"
+def load_css(cfg_home: Path, theme: str | None, color_scheme: str | None) -> bytes:
 
-    css_file_path = get_config_home() / "style.css"
+    cs_suffixes = [""]
 
-    try:
-        with open(css_file_path, "rb") as fhandle:
-            ret += fhandle.read()
-    except Exception as ex:
-        logging.error("unable to load CSS stylesheet from '%s': %s", css_file_path, ex)
+    if color_scheme is not None:
+        cs_suffixes.append("-" + color_scheme)
+
+    theme_suffixes = [""]
+
+    if theme is not None:
+        theme_suffixes.append("-" + theme)
+
+    ret = b""
+
+    tried = []
+    failed = []
+
+    for cs_suffix in cs_suffixes:
+        for theme_suffix in theme_suffixes:
+            css_file = cfg_home / f"style{theme_suffix}{cs_suffix}.css"
+
+            tried.append(css_file)
+
+            try:
+                len_pre = len(ret)
+                with open(css_file, "rb") as fhandle:
+                    ret += b"\n"
+                    ret += fhandle.read()
+                if len(ret) > len_pre:
+                    logging.debug("loaded '%s'", css_file)
+            except Exception as ex:
+                failed.append((css_file, ex))
+
+    if len(tried) == len(failed):
+        if failed:
+            for css_file, ex in failed:
+                logging.error(
+                    "failed to load '%s': %s",
+                    css_file.name,
+                    ex,
+                )
+        elif not tried:
+            logging.error("no CSS files found in '%s'", css_file.parent)
+        else:
+            for cfg_file in tried:
+                logging.info("tried to load '%s'", css_file.name)
 
     return ret
 
@@ -224,9 +331,21 @@ class MehBarGUI(Gtk.ApplicationWindow):
     DEFAULT_LAYER = "top"
     DEFAULT_GAPS = [0, 0]
     DEFAULT_HOMOGENOUS = True
+    DEFAULT_ICON_SIZE = 16
     SECTION_NAMES = ["start", "center", "end"]
 
-    def __init__(self, *args, **kwargs):
+    TIMING_OFFSET = 0.5
+
+    def __init__(
+        self,
+        *args,
+        config_dir: Path | None,
+        theme: str | None,
+        color_scheme: str,
+        **kwargs: str,
+    ):
+
+        print(kwargs)
         super().__init__(*args, **kwargs)
 
         self.wtype_map = {}
@@ -244,15 +363,31 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.i3_conn = None
         self._unique_wtypes = set()
 
-        self.config = load_config()
+        self.config = load_config(config_dir, theme, color_scheme)
 
         bar_config = self.config.get("bar")
 
-        self.icon_manager = IconManager(bar_config.get("icon_size", 12))
+        reload_config = False
+
+        if theme is None:
+            reload_config = (theme := bar_config.get("theme")) is not None
+
+        if color_scheme is None:
+            reload_config = (color_scheme := bar_config.get("color_scheme")) is not None
+
+        if reload_config:
+            self.config = load_config(config_dir, theme, color_scheme)
+            bar_config = self.config.get("bar")
+
+        self._intervals = set()
+
+        self.icon_manager = IconManager(
+            bar_config.get("icon_size", self.DEFAULT_ICON_SIZE)
+        )
 
         if (icons := self.config.get("icons")) is not None:
             for name, path in icons.items():
-                self.icon_manager.load_image(name, path)
+                self.icon_manager.load_icon(name, path)
 
         if not bar_config or bar_config is None:
             raise RuntimeError("no valid configuration available")
@@ -293,7 +428,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         Gtk4LayerShell.auto_exclusive_zone_enable(self)
 
         style_provider = Gtk.CssProvider()
-        css_stylesheet = self.BASE_CSS + load_css()
+        css_stylesheet = self.BASE_CSS + load_css(config_dir, theme, color_scheme)
         style_provider.load_from_data(css_stylesheet)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display().get_default(),
@@ -324,6 +459,28 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.main_box.append(self.end_box)
 
         self.set_child(self.main_box)
+
+    def _get_relaxed_interval(self, interval: int | float) -> int | float:
+
+        # makes sure that all intervals are at least 500 milliseconds apart from each other
+        adjusted_interval = interval + self.TIMING_OFFSET
+
+        # make sure that there is at least one pair of numbers (zero and infinity)
+        for lo, hi in pairwise(sorted([0, *self._intervals, INFINITY])):
+            lo_threshold = lo + self.TIMING_OFFSET
+
+            if lo_threshold < interval < hi:
+                break
+            elif lo < adjusted_interval < hi:
+                interval += self.TIMING_OFFSET - (interval - lo)
+                break
+            elif hi == INFINITY and lo_threshold > interval:
+                interval = lo_threshold
+                break
+
+        self._intervals.add(interval)
+
+        return interval
 
     def _widget_class_for_type(self, wtype: str) -> WidgetBase:
 
@@ -362,6 +519,9 @@ class MehBarGUI(Gtk.ApplicationWindow):
         onclick = kwargs.pop("onclick", None)
 
         onscroll = kwargs.pop("onscroll", None)
+
+        if (interval := kwargs.get("interval", 0)) > 0:
+            kwargs["interval"] = self._get_relaxed_interval(interval)
 
         args = set()
 
@@ -440,8 +600,17 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
 
 class MehBar(Gtk.Application):
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        config_dir: Path | None,
+        theme: str | None = None,
+        color_scheme: str | None = "system",
+        **kwargs: str,
+    ):
         super().__init__(**kwargs)
+        self.config_dir = config_dir
+        self.theme = theme
+        self.color_scheme = color_scheme
         self.win = None
 
     def do_activate(self, *args, **kwargs):
@@ -449,7 +618,12 @@ class MehBar(Gtk.Application):
             active_window.present()
         else:
             try:
-                self.win = MehBarGUI(application=self)
+                self.win = MehBarGUI(
+                    config_dir=self.config_dir,
+                    theme=self.theme,
+                    color_scheme=self.color_scheme,
+                    application=self,
+                )
 
                 t_module_worker = Thread(
                     target=partial(anyio.run, self.win.run_widgets), name="AIO Worker"
@@ -463,10 +637,45 @@ class MehBar(Gtk.Application):
 
 
 def entrypoint(argv):
+    parser = argparse.ArgumentParser(
+        prog="mehbar",
+        description="Mehbar, a highly customizable status bar for Linux",
+        epilog="Copyright (c) 2026, Mehsayer",
+        suggest_on_error=True,
+    )
+
+    parser.add_argument(
+        "-c", "--config-dir", dest="config_dir", type=Path, default=get_config_home()
+    )
+    parser.add_argument(
+        "-t", "--theme", default=os.getenv("MEHBAR_THEME"), dest="theme", type=str
+    )
+    parser.add_argument(
+        "-s",
+        "--color-scheme",
+        choices=COLOR_SCHEMES,
+        default=os.getenv("MEHBAR_COLOR_SCHEME", "system"),
+        dest="color_scheme",
+        nargs=1,
+    )
+    args = parser.parse_args(argv)
+
+    if not args.config_dir.is_dir():
+        parser.error(f"'{args.config_dir}' is not an existing directory")
+
+    if args.color_scheme not in COLOR_SCHEMES:
+        valid_cs = ", ".join([f"'{scheme}'" for scheme in COLOR_SCHEMES])
+        parser.error(
+            f"unknown color scheme '{args.color_scheme}', (choose from {valid_cs})"
+        )
+
     app = MehBar(
+        config_dir=args.config_dir,
+        theme=args.theme,
+        color_scheme=args.color_scheme,
         application_id="org.codeberg.mehsayer.mehbar",
         flags=Gio.ApplicationFlags.FLAGS_NONE,
     )
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, app.quit)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, app.quit)
-    app.run(argv)
+    app.run([])

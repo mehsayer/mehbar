@@ -11,7 +11,7 @@ class LevelAwareLoggingFormatter(logging.Formatter):
     DEFAULT_FORMAT = "[%(asctime)s] *%(levelname)s*: %(message)s"
 
     LEVEL_FORMATS = {
-        logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x, <%(taskName)s>): %(message)s"
+        logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x): %(message)s"
     }
 
     NO_EXC_INFO = (None, None, None)
@@ -73,4 +73,4 @@ if __package__ == "":
 if __name__ == "__main__":
     from mehbar._internals import main as _main
 
-    _main.entrypoint(sys.argv)
+    _main.entrypoint(sys.argv[1:])
