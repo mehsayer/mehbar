@@ -1,57 +1,11 @@
+import argparse
 import logging
 import os
 import sys
 from functools import partial
-from types import TracebackType
+from pathlib import Path
 
-from mehbar import MEHBAR_EXC_INFO, MEHBAR_LOG_LEVEL
-
-
-class LevelAwareLoggingFormatter(logging.Formatter):
-    DEFAULT_FORMAT = "[%(asctime)s] *%(levelname)s*: %(message)s"
-
-    LEVEL_FORMATS = {
-        logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x): %(message)s"
-    }
-
-    NO_EXC_INFO = (None, None, None)
-
-    def __init__(
-        self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None
-    ):
-        self._styles = {}
-        self.datefmt = datefmt
-
-        for levelno in logging.getLevelNamesMapping().values():
-            level_fmt = self.LEVEL_FORMATS.get(levelno, self.DEFAULT_FORMAT)
-            level_style = logging.PercentStyle(level_fmt, defaults=defaults)
-
-            if validate:
-                level_style.validate()
-            self._styles[levelno] = level_style
-
-    def usesTime(self):
-        return True
-
-    def formatException(self, ei):
-        return super().formatException(ei) if ei != self.NO_EXC_INFO else None
-
-    def formatMessage(self, record: logging.LogRecord):
-        return self._styles[record.levelno].format(record)
-
-
-logging.basicConfig(
-    level=logging.getLevelNamesMapping().get(MEHBAR_LOG_LEVEL, logging.INFO)
-)
-
-for handler in logging.root.handlers:
-    handler.setFormatter(LevelAwareLoggingFormatter())
-
-logging.info = partial(logging.info, exc_info=MEHBAR_EXC_INFO)
-logging.debug = partial(logging.debug, exc_info=MEHBAR_EXC_INFO)
-logging.error = partial(logging.error, exc_info=MEHBAR_EXC_INFO)
-logging.critical = partial(logging.critical, exc_info=MEHBAR_EXC_INFO)
-logging.warning = partial(logging.warning, exc_info=MEHBAR_EXC_INFO)
+from mehbar.tools import LevelAwareLoggingFormatter, get_config_home, get_system_cs
 
 # Remove '' and current working directory from the first entry
 # of sys.path, if present to avoid using current directory
@@ -71,6 +25,82 @@ if __package__ == "":
     sys.path.insert(0, path)
 
 if __name__ == "__main__":
+    log_level_mapping = logging.getLevelNamesMapping()
+    log_levels = [name.lower() for name in log_level_mapping.keys()]
+    color_schemes = ["light", "dark", "system"]
+
+    config_home = get_config_home()
+
+    parser = argparse.ArgumentParser(
+        prog="mehbar",
+        description="Mehbar, a highly customizable status bar for Linux",
+        epilog="Copyright (c) 2026, Mehsayer",
+        suggest_on_error=True,
+    )
+
+    parser.add_argument(
+        "-c",
+        "--config-dir",
+        dest="config_dir",
+        type=Path,
+        default=config_home,
+        help=f"configuration directory path, defaults to '{config_home}'",
+    )
+
+    parser.add_argument(
+        "-L",
+        "--log-level",
+        choices=log_levels,
+        dest="log_level",
+        metavar="LEVEL",
+        default="debug",
+        help=f"log level, one of {', '.join([f"'{s}'" for s in log_levels])}",
+    )
+
+    parser.add_argument(
+        "-E",
+        "--exception-info",
+        action="store_true",
+        dest="exc_info",
+        help="print exception information to stdout",
+    )
+    parser.add_argument(
+        "-t",
+        "--theme",
+        default=None,
+        dest="theme",
+        type=str,
+        help="theme name",
+    )
+    parser.add_argument(
+        "-s",
+        "--color-scheme",
+        choices=color_schemes,
+        default=get_system_cs(),
+        metavar="COLOR_SCHEME",
+        dest="color_scheme",
+        help=f"color scheme, one of {', '.join([f"'{s}'" for s in color_schemes])}",
+    )
+    args = parser.parse_args()
+
+    if not args.config_dir.is_dir():
+        parser.error(f"'{args.config_dir}' is not an existing directory")
+
+    kwargs = vars(args)
+    log_level = kwargs.pop("log_level").upper()
+    exc_info = kwargs.pop("exc_info", False)
+
+    logging.basicConfig(level=log_level_mapping.get(log_level, logging.INFO))
+
+    for handler in logging.root.handlers:
+        handler.setFormatter(LevelAwareLoggingFormatter())
+
+    logging.info = partial(logging.info, exc_info=exc_info)
+    logging.debug = partial(logging.debug, exc_info=exc_info)
+    logging.error = partial(logging.error, exc_info=exc_info)
+    logging.critical = partial(logging.critical, exc_info=exc_info)
+    logging.warning = partial(logging.warning, exc_info=exc_info)
+
     from mehbar._internals import main as _main
 
-    _main.entrypoint(sys.argv[1:])
+    _main.entrypoint(**kwargs)

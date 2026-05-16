@@ -1,0 +1,98 @@
+[bar]
+height = 24
+icon_size = 24
+layer = "top"
+homogenous = true
+threaded = false
+position = "bottom"
+gaps = [8, 8, 8, 8]
+
+[icons]
+test = "/home/meh/sunn.svg"
+open = "folder-open"
+level0 = "network-cellular-signal-none-symbolicc"
+level1 = "network-cellular-signal-weak-symbolicc"
+level2 = "network-cellular-signal-ok-symbolicc"
+level3 = "network-cellular-signal-good-symbolicc"
+level4 = "network-cellular-signal-excellent-symbolicc"
+
+# [start.workspaces]
+# type = "i3_workspaces"
+
+[start.temperature]
+interval = 1
+type = "temperature"
+ramp = [
+    " A [icon=level1;]",
+    " B [icon=level2;classes:icon=tempwarn;]",
+    " C [icon=level3;classes:icon=!none;]",
+    " D [icon=level4;classes:icon=tempcrit;]"]
+label_format = "[icon=level0>;]{ramp} {temp}°C"
+
+
+[start.cpu]
+type = "cpu_usage"
+interval = 10
+label_format = "cpu {percent}%"
+
+
+[start.disk0]
+type = "disk"
+interval = 10
+label_format = "disk {percent}%"
+
+
+[start.memory]
+type = "memory"
+interval = 10
+label_format = "mem {percent}%"
+# [center.exec_one_tail]
+# type = "exec_tail"
+# label_format = "({label}) <{ramp}>"
+# ramp = ["a", "b", "c", "D"]
+# cmdline = [
+#     "/home/meh/test.sh",
+# ]
+
+[end.kb]
+type = "i3_kblayout"
+label_format = "{layout}"
+rewrite = {
+    "(?i)english.*" = "GB",
+    "(?i)ukrainian.*" = "UA",
+    "(?i)german.*" = "DE",
+}
+
+[end.datetime]
+type = "datetime"
+interval = 5
+label_format = "{datetime:%H:%M:%S}"
+# [end.wlan]
+# type = "wifi"
+# iface = "wlan0"
+# ramp = [
+#     "󰤮",
+#     "󰤟",
+#     "󰤥",
+#     "󰤨",
+# ]
+# backend = "iwd"
+# label_format = "{ramp} {ssid} {percentage}%"
+
+# [end.vol]
+# type = "pulse_volume"
+# onclick = ["firefox"]
+# ramp = [
+#     "󰝟",
+#     "󰕿",
+#     "󰖀",
+#     "󰖀",
+#     "󰕾",
+# ]
+# label_format = "{ramp} {percent}%"
+
+
+# [start.file_w]
+# type = "file"
+# path = "/home/meh/lines.txt"
+# label_format = "FILE: {label}"

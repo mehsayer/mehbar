@@ -1,15 +1,15 @@
+from __future__ import annotations
+
 import json
 import logging
-import pickle
 import random
 import re
-import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from functools import Placeholder, cache, lru_cache, partial, partialmethod
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import anyio
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
@@ -136,7 +136,7 @@ class WidgetContent:
 
     @classmethod
     @cache
-    def parse(cls, text: str) -> WidgetContent:  # noqa: F821
+    def parse(cls, text: str) -> WidgetContent:
         """
         Parses the string of the following format, returns a `WidgetContent` instance:
             [<ICON SPECIFICATION>;<CSS CLASSES>;<TOOLTIP TEXT>;] <TEXT>

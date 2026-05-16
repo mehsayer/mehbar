@@ -1,0 +1,31 @@
+window.background {
+    background: unset;
+}
+
+box {
+    background-color: #efdddd;
+}
+
+#end {
+    padding-right: 8px;
+}
+
+#start {
+    padding-left: 8px;
+}
+
+#playerctl-previuos,
+#playerctl-play-pause,
+#playerctl-next {
+    padding: 0 8px 0 8px;
+}
+
+.workspace {
+    padding: 0px 8px 0px 8px;
+}
+
+.bar-widget {
+    font-size: 10pt;
+    padding: 0px 6px 0px 6px;
+    font-family: "Monospace";
+}

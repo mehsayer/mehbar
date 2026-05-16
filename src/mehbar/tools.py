@@ -1,8 +1,13 @@
 import hashlib
+import logging
+import os
 import string
 from functools import partial
+from importlib import resources
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+import gi
 
 
 def next_prime(num: int, offset: int = 0):
@@ -121,6 +126,56 @@ class FormattableTimeDelta:
         return f"{self.__class__.__name__}(seconds={self.tot_secs})"
 
 
+def get_config_home() -> Path:
+    if (cfg_home := os.getenv("XDG_CONFIG_HOME")) is None:
+        cfg_home = Path.home() / ".config"
+    else:
+        cfg_home = Path(cfg_home)
+    return cfg_home / "mehbar"
+
+
+def get_asset(asset: str | Path) -> Path | None:
+    asset_file = None
+    with resources.as_file(resources.files()) as mod_dir:
+        asset_file_ = mod_dir / "assets" / asset
+
+        if asset_file_.is_file():
+            asset_file = asset_file_
+    return asset_file
+
+
+def get_system_cs() -> str:
+    ret = "system"
+
+    try:
+        from gi.repository import Gio
+
+        gsettings_schema = "org.gnome.desktop.interface"
+
+        if Gio.SettingsSchemaSource.get_default().lookup(gsettings_schema) is not None:
+            gsettings = Gio.Settings.new(gsettings_schema)
+
+            gsettings_cs = gsettings.get_string("color-scheme")
+            if gsettings_cs == "prefer-dark":
+                ret = "dark"
+            elif gsettings_cs == "prefer-light":
+                ret = "light"
+    except ImportError:
+        pass
+
+    if ret is None:
+        try:
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw
+
+            style_mgr = Adw.StyleManager.get_default()
+            ret = "dark" if style_mgr.get_dark() else "light"
+        except (ImportError, ValueError):
+            pass
+
+    return ret
+
+
 class OptionalFormatter(string.Formatter):
     """Like the default stripng formatter that you know and love but silently
     skips missing fields.
@@ -156,3 +211,36 @@ class OptionalFormatter(string.Formatter):
                 unparsed += "}"
 
         return super().vformat(unparsed, args, kwargs)
+
+
+class LevelAwareLoggingFormatter(logging.Formatter):
+    DEFAULT_FORMAT = "[%(asctime)s] *%(levelname)s*: %(message)s"
+
+    LEVEL_FORMATS = {
+        logging.DEBUG: "[%(asctime)s] *%(levelname)s* <%(name)s> (<%(threadName)s> 0x%(thread)x): %(message)s"
+    }
+
+    NO_EXC_INFO = (None, None, None)
+
+    def __init__(
+        self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None
+    ):
+        self._styles = {}
+        self.datefmt = datefmt
+
+        for levelno in logging.getLevelNamesMapping().values():
+            level_fmt = self.LEVEL_FORMATS.get(levelno, self.DEFAULT_FORMAT)
+            level_style = logging.PercentStyle(level_fmt, defaults=defaults)
+
+            if validate:
+                level_style.validate()
+            self._styles[levelno] = level_style
+
+    def usesTime(self):
+        return True
+
+    def formatException(self, ei):
+        return super().formatException(ei) if ei != self.NO_EXC_INFO else None
+
+    def formatMessage(self, record: logging.LogRecord):
+        return self._styles[record.levelno].format(record)

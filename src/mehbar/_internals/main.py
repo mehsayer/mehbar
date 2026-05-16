@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
-import copy
 import importlib
 import logging
 import os
@@ -55,15 +53,9 @@ except ValueError as ex:
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell
 
-# # // Detect if we are using a dark theme
-# #     GSettings *settings = g_settings_new("org.gnome.desktop.interface");
-# #     gchar *color_scheme = g_settings_get_string(settings, "color-scheme");
-# #     gboolean bDarkTheme = (g_strcmp0(color_scheme, "prefer-dark") == 0);
-#     g_free(color_scheme);
-#     g_object_unref(settings);
 import mehbar._widgets as builtin_widgets
 from mehbar.exceptions import BarConfigError
-from mehbar.tools import next_prime, overlay_dict_r
+from mehbar.tools import get_asset, overlay_dict_r
 from mehbar.widget import IconManager, WidgetBase
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
@@ -81,64 +73,21 @@ CONFIG_PARSER_MAP = {
     "yaml": "yaml",
 }
 
-COLOR_SCHEMES = ["light", "dark", "system"]
 
-
-def get_config_home() -> Path:
-    if (cfg_home := os.getenv("XDG_CONFIG_HOME")) is None:
-        cfg_home = Path.home() / ".config"
-    else:
-        cfg_home = Path(cfg_home)
-    return cfg_home / "mehbar"
-
-
-def get_system_cs() -> str:
-    ret = None
-
-    if (env_cs := os.getenv("MEHBAR_COLOR_SCHEME")) is COLOR_SCHEMES:
-        ret = env_cs
-    else:
-        gsettings_schema = "org.gnome.desktop.interface"
-
-        if Gio.SettingsSchemaSource.get_default().lookup(gsettings_schema) is not None:
-            gsettings = Gio.Settings.new(gsettings_schema)
-
-            gsettings_cs = gsettings.get_string("color-scheme")
-            if gsettings_cs == "prefer-dark":
-                ret = "dark"
-            elif gsettings_cs == "prefer-light":
-                ret = "light"
-        if ret is None:
-            try:
-                gi.require_version("Adw", "1")
-                from gi.repository import Adw
-
-                style_mgr = Adw.StyleManager.get_default()
-                ret = "dark" if style_mgr.get_dark() else "light"
-            except (ImportError, ValueError):
-                logging.error(
-                    "cannot determine current color scheme, will use 'system'"
-                )
-    if ret is None:
-        ret = "system"
-    return ret
-
-
-def load_config(
+def get_config_paths(
     cfg_home: Path, theme: str | None, color_scheme: str | None
-) -> dict[str, Any]:  # noqa: MC0001
-    ret = {}
+) -> list[tuple[Path, str]]:
 
-    import_map = copy.copy(CONFIG_PARSER_MAP)
+    def_cfg_file = get_asset(
+        "default-config.toml"
+    )  # this should be json for production
 
-    if (envvar_parser := os.getenv("MEHBAR_CONFIG_PARSER_MODULE")) is not None:
-        if envvar_parser in import_map:
-            for drop_parser in list(import_map.keys()):
-                if drop_parser != envvar_parser:
-                    del import_map[drop_parser]
+    if not cfg_home.is_dir() and def_cfg_file is None:
+        raise RuntimeError("configuration directory '%s' does not exist", cfg_home)
 
-    tried = []
-    failed = []
+    paths = []
+
+    theme_dirs = []
 
     cs_suffixes = [""]
 
@@ -148,37 +97,104 @@ def load_config(
     theme_suffixes = [""]
 
     if theme is not None:
+        if (theme_dir := cfg_home / theme).is_dir():
+            theme_dirs.append(theme_dir)
         theme_suffixes.append("-" + theme)
 
-    for module_name, config_ext in import_map.items():
-        read_ok = False
+    main_cfg_files = []
+
+    for parser_mod, ext in CONFIG_PARSER_MAP.items():
+        cfg_file = cfg_home / f"config.{ext}"
+        if cfg_file.is_file():
+            main_cfg_files.append((cfg_file, parser_mod))
+        elif def_cfg_file is not None and def_cfg_file.suffix[1:] == ext:
+            main_cfg_files.append((def_cfg_file, parser_mod))
+
         for cs_suffix in cs_suffixes:
             for theme_suffix in theme_suffixes:
-                parsed = {}
-
-                cfg_file = cfg_home / f"config{theme_suffix}{cs_suffix}.{config_ext}"
-
+                cfg_file = cfg_home / f"config{theme_suffix}{cs_suffix}.{ext}"
                 if cfg_file.is_file():
-                    tried.append((cfg_file, module_name))
-                    try:
-                        parser = importlib.import_module(module_name)
-                        parser_func = getattr(parser, "safe_load", parser.load)
+                    paths.append((cfg_file, parser_mod))
 
-                        with open(cfg_file, "rb") as fhandle:
-                            parsed = parser_func(fhandle)
+        for theme_dir in theme_dirs:
+            cfg_file = theme_dir / f"config.{ext}"
+            if cfg_file.is_file():
+                paths.append((cfg_file, parser_mod))
 
-                        if parsed:
-                            read_ok = True
-                            logging.debug(
-                                "loaded '%s' using '%s'", cfg_file, module_name
-                            )
+    if not main_cfg_files:
+        raise RuntimeError(
+            "no main configuration file 'config.*' found in '%s'", cfg_home
+        )
 
-                            overlay_dict_r(ret, parsed)
+    for cfg_file in main_cfg_files:
+        paths.insert(0, cfg_file)
 
-                    except Exception as ex:
-                        failed.append((cfg_file, module_name, ex))
-        if read_ok:
-            break
+    return paths
+
+
+def get_css_file_paths(
+    cfg_home: Path, theme: str | None, color_scheme: str | None
+) -> list[Path]:
+
+    if (base_css_file := get_asset("style.css")) is None:
+        raise RuntimeError("base CSS file '%s' not found", base_css_file)
+
+    paths = [base_css_file]
+
+    if cfg_home.is_dir():
+        theme_dirs = []
+
+        cs_suffixes = [""]
+
+        if color_scheme is not None:
+            cs_suffixes.append("-" + color_scheme)
+
+        theme_suffixes = [""]
+
+        if theme is not None:
+            if (theme_dir := cfg_home / theme).is_dir():
+                theme_dirs.append(theme_dir)
+            theme_suffixes.append("-" + theme)
+
+        for cs_suffix in cs_suffixes:
+            for theme_suffix in theme_suffixes:
+                css_file = cfg_home / f"style{theme_suffix}{cs_suffix}.css"
+                if css_file.is_file():
+                    paths.append(css_file)
+
+        for theme_dir in theme_dirs:
+            css_file = theme_dir / "style.css"
+            if css_file.is_file():
+                paths.append(css_file)
+
+    return paths
+
+
+def load_config(
+    cfg_home: Path, theme: str | None, color_scheme: str | None
+) -> dict[str, Any]:
+    ret = {}
+
+    tried = []
+    failed = []
+
+    for cfg_file, parser_mod in get_config_paths(cfg_home, theme, color_scheme):
+        if cfg_file.is_file():
+            tried.append((cfg_file, parser_mod))
+            try:
+                parser = importlib.import_module(parser_mod)
+                parser_func = getattr(parser, "safe_load", parser.load)
+
+                with open(cfg_file, "rb") as fhandle:
+                    parsed = parser_func(fhandle)
+
+                if parsed:
+                    logging.debug("loaded '%s' using '%s'", cfg_file, parser_mod)
+
+                    overlay_dict_r(ret, parsed)
+
+            except Exception as ex:
+                failed.append((cfg_file, parser_mod, ex))
 
     if not ret:
         if failed:
@@ -201,36 +217,23 @@ def load_config(
 
 def load_css(cfg_home: Path, theme: str | None, color_scheme: str | None) -> bytes:
 
-    cs_suffixes = [""]
-
-    if color_scheme is not None:
-        cs_suffixes.append("-" + color_scheme)
-
-    theme_suffixes = [""]
-
-    if theme is not None:
-        theme_suffixes.append("-" + theme)
-
     ret = b""
 
     tried = []
     failed = []
 
-    for cs_suffix in cs_suffixes:
-        for theme_suffix in theme_suffixes:
-            css_file = cfg_home / f"style{theme_suffix}{cs_suffix}.css"
+    for css_file in get_css_file_paths(cfg_home, theme, color_scheme):
+        tried.append(css_file)
 
-            tried.append(css_file)
-
-            try:
-                len_pre = len(ret)
-                with open(css_file, "rb") as fhandle:
-                    ret += b"\n"
-                    ret += fhandle.read()
-                if len(ret) > len_pre:
-                    logging.debug("loaded '%s'", css_file)
-            except Exception as ex:
-                failed.append((css_file, ex))
+        try:
+            len_pre = len(ret)
+            with open(css_file, "rb") as fhandle:
+                ret += b"\n"
+                ret += fhandle.read()
+            if len(ret) > len_pre:
+                logging.debug("loaded '%s'", css_file)
+        except Exception as ex:
+            failed.append((css_file, ex))
 
     if len(tried) == len(failed):
         if failed:
@@ -241,10 +244,10 @@ def load_css(cfg_home: Path, theme: str | None, color_scheme: str | None) -> byt
                     ex,
                 )
         elif not tried:
-            logging.error("no CSS files found in '%s'", css_file.parent)
+            logging.error("no CSS files found in '%s'", cfg_home)
         else:
-            for cfg_file in tried:
-                logging.info("tried to load '%s'", css_file.name)
+            for css_file in tried:
+                logging.info("tried to load '%s'", css_file)
 
     return ret
 
@@ -288,38 +291,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         "WidgetWired",
     ]
 
-    BASE_CSS = b"""
-        window.background {
-            background: unset;
-        }
-
-        box {
-            background-color: #efdddd;
-        }
-
-        #end {
-            padding-right: 8px;
-        }
-
-        #start {
-            padding-left: 8px;
-        }
-
-        #playerctl-previuos, #playerctl-play-pause, #playerctl-next {
-            padding: 0 8px 0 8px;
-        }
-
-         .workspace {
-             padding: 0px 8px 0px 8px;
-         }
-
-         .bar-widget {
-             font-size: 10pt;
-             padding: 0px 6px 0px 6px;
-             font-family: "Monospace";
-         }
-        """
-
     ANCHOR_MAP = {"top": Gtk4LayerShell.Edge.TOP, "bottom": Gtk4LayerShell.Edge.BOTTOM}
     LAYER_MAP = {
         "top": Gtk4LayerShell.Layer.TOP,
@@ -344,8 +315,6 @@ class MehBarGUI(Gtk.ApplicationWindow):
         color_scheme: str,
         **kwargs: str,
     ):
-
-        print(kwargs)
         super().__init__(*args, **kwargs)
 
         self.wtype_map = {}
@@ -378,6 +347,11 @@ class MehBarGUI(Gtk.ApplicationWindow):
         if reload_config:
             self.config = load_config(config_dir, theme, color_scheme)
             bar_config = self.config.get("bar")
+
+            theme = bar_config.get("theme")
+            color_scheme = bar_config.get("color_scheme")
+
+        css = load_css(config_dir, theme, color_scheme)
 
         self._intervals = set()
 
@@ -428,7 +402,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         Gtk4LayerShell.auto_exclusive_zone_enable(self)
 
         style_provider = Gtk.CssProvider()
-        css_stylesheet = self.BASE_CSS + load_css(config_dir, theme, color_scheme)
+        css_stylesheet = css
         style_provider.load_from_data(css_stylesheet)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display().get_default(),
@@ -520,7 +494,9 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         onscroll = kwargs.pop("onscroll", None)
 
-        if (interval := kwargs.get("interval", 0)) > 0:
+        relax_interval = kwargs.pop("relax_interval", True)
+
+        if (interval := kwargs.get("interval", 0)) > 0 and relax_interval:
             kwargs["interval"] = self._get_relaxed_interval(interval)
 
         args = set()
@@ -636,46 +612,13 @@ class MehBar(Gtk.Application):
                 sys.exit(os.EX_SOFTWARE)
 
 
-def entrypoint(argv):
-    parser = argparse.ArgumentParser(
-        prog="mehbar",
-        description="Mehbar, a highly customizable status bar for Linux",
-        epilog="Copyright (c) 2026, Mehsayer",
-        suggest_on_error=True,
-    )
-
-    parser.add_argument(
-        "-c", "--config-dir", dest="config_dir", type=Path, default=get_config_home()
-    )
-    parser.add_argument(
-        "-t", "--theme", default=os.getenv("MEHBAR_THEME"), dest="theme", type=str
-    )
-    parser.add_argument(
-        "-s",
-        "--color-scheme",
-        choices=COLOR_SCHEMES,
-        default=os.getenv("MEHBAR_COLOR_SCHEME", "system"),
-        dest="color_scheme",
-        nargs=1,
-    )
-    args = parser.parse_args(argv)
-
-    if not args.config_dir.is_dir():
-        parser.error(f"'{args.config_dir}' is not an existing directory")
-
-    if args.color_scheme not in COLOR_SCHEMES:
-        valid_cs = ", ".join([f"'{scheme}'" for scheme in COLOR_SCHEMES])
-        parser.error(
-            f"unknown color scheme '{args.color_scheme}', (choose from {valid_cs})"
-        )
+def entrypoint(*args, **kwargs):
 
     app = MehBar(
-        config_dir=args.config_dir,
-        theme=args.theme,
-        color_scheme=args.color_scheme,
         application_id="org.codeberg.mehsayer.mehbar",
         flags=Gio.ApplicationFlags.FLAGS_NONE,
+        **kwargs,
     )
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, app.quit)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, app.quit)
-    app.run([])
+    app.run()
