@@ -1,7 +1,5 @@
 from itertools import batched
 
-import psutil
-
 from mehbar.tools import FormattableTimeDelta
 from mehbar.widget import WidgetBase
 
@@ -37,8 +35,11 @@ class WidgetBattery(WidgetBase):
             self.ramps.extend([(None, None)] * (self.MAX_CHARGE + 1))
 
     async def run(self):
+
+        from psutil import POWER_TIME_UNKNOWN, POWER_TIME_UNLIMITED, sensors_battery
+
         while await self.sleep_interval():
-            if (bat_st := psutil.sensors_battery()) is not None:
+            if (bat_st := sensors_battery()) is not None:
                 if bat_st != self._last_value:
                     self._last_value = bat_st
 
@@ -47,8 +48,8 @@ class WidgetBattery(WidgetBase):
                     timeleft = None
 
                     if bat_st.secsleft not in [
-                        psutil.POWER_TIME_UNLIMITED,
-                        psutil.POWER_TIME_UNKNOWN,
+                        POWER_TIME_UNLIMITED,
+                        POWER_TIME_UNKNOWN,
                     ]:
                         timeleft = FormattableTimeDelta(bat_st.secsleft)
 

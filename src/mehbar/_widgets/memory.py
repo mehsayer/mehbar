@@ -1,34 +1,25 @@
-import psutil
-
-from mehbar.widget import IconManager, WidgetBase
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import WidgetBase
 
 
 class WidgetMemoryUsage(WidgetBase):
-    TYPE = "memory"
+    TYPE = "memory_usage"
 
-    MAX_PERCENT = 100
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
 
-    def __init__(
-        self,
-        interval: int = 0,
-        label_format: str | None = None,
-        ramp: list[str] | None = None,
-        icon_manager: IconManager | None = None,
-    ):
-        super().__init__(
-            interval, label_format, ramp, icon_manager, max_ramp_level=self.MAX_PERCENT
-        )
-
-        self._last_percentage = -1
+        self._last_used = -1
 
     async def run(self):
+        from psutil import virtual_memory
+
         while await self.sleep_interval():
-            vmem = psutil.virtual_memory()
+            vmem = virtual_memory()
 
-            if self._last_percentage != vmem.used:
-                self._last_percentage = vmem.used
+            if self._last_used != vmem.used:
+                self._last_used = vmem.used
 
-                percent = min(round(vmem.percent), self.MAX_PERCENT)
+                percent = min(round(vmem.percent), 100)
 
                 used_mib = vmem.used / (1024**2)
                 total_mib = vmem.total / (1024**2)

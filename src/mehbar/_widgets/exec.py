@@ -3,35 +3,28 @@ import time
 import anyio
 from anyio.streams.text import TextReceiveStream
 
-from mehbar.widget import JSONInputWidgetBase
+from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import JSONInputMixin, WidgetBase
 
 
-class ExecWidgetBase(JSONInputWidgetBase):
+class ExecWidgetBase(JSONInputMixin, WidgetBase):
     UNIQUE = False
+    MAX_LPS = 10
 
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        cmdline: str | list[str],
-        ramp: list[str] | None = None,
-        max_lps: int = 5,
-    ):
-        super().__init__(interval, label_format, ramp, max_lps)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        if (cmdline := self.cfg.get("cmdline")) is None or not cmdline:
+            raise BarConfigError("'cmdline' must be specified")
         self.cmdline = cmdline
+
+        max_lps = self.cfg.get("max_lps", self.MAX_LPS)
+        self.max_lps = max(min(max_lps, self.MAX_LPS), 1)
 
 
 class WidgetExecTail(ExecWidgetBase):
     TYPE = "exec_tail"
-
-    def __init__(
-        self,
-        label_format: str,
-        cmdline: str | list[str],
-        ramp: list[str] | None = None,
-        max_lps: int = 5,
-    ):
-        super().__init__(0, label_format, cmdline, ramp, max_lps)
 
     async def run(self):
         async with await anyio.open_process(self.cmdline) as proc:
@@ -49,7 +42,7 @@ class WidgetExecTail(ExecWidgetBase):
                             t0 = t1
 
                         if lps <= self.max_lps:
-                            await self.format_label_idle_json_async(line)
+                            await self.set_content_json_i(line)
 
 
 class WidgetExecRepeat(ExecWidgetBase):
@@ -61,5 +54,5 @@ class WidgetExecRepeat(ExecWidgetBase):
             if proc.stdout is not None:
                 for line in proc.stdout.decode().splitlines()[: self.max_lps]:
                     if line.strip():
-                        await self.format_label_idle_json_async(line)
+                        await self.set_content_json_i(line)
                         break

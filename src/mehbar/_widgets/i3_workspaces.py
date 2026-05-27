@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 from itertools import compress
 from typing import Any
 
@@ -7,55 +8,60 @@ from gi.repository import GLib, Gtk
 from i3ipc import Event, WorkspaceEvent
 from i3ipc.aio import Connection
 
-from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import RewriteMixin, WidgetBase
 
 
-class I3WorkspaceButton(I3ListenerMixin, WidgetBase):
+class I3WorkspaceButton(WidgetBase):
     def __init__(
         self,
         name: str,
-        label: str,
-        i3_conn: Connection,
+        ws_name: str,
+        res_mgr: ResourceManager,
         loop_token: anyio.lowlevel.EventLoopToken | None = None,
     ):
-        super().__init__(0, None, i3_conn=i3_conn)
-        self.set_name(name)
-        self.set_label(label)
-        self.add_css_class("workspace")
-        self.onclick_call(1, self.switch_ws)
+        super().__init__(name, res_mgr)
+
+        self.add_css_class("i3-workspace")
+        self.onclick_call(1, partial(self.elt_run, self._switch_ws_async, ws_name))
+
+        # self.ws_name = ws_name
         self.loop_token = loop_token
 
     async def _switch_ws_async(self, name: str):
-        i3_conn = await self.get_i3_conn()
+        i3_conn = await self.res_mgr.get_i3_connection_async()
         return await i3_conn.command("workspace " + name)
 
-    def switch_ws(self):
-        name = self.get_name()
-        self.elt_run(self._switch_ws_async, name)
+    # def switch_ws(self):
+    #     self.elt_run(self._switch_ws_async, self.ws_name)
 
 
-class WidgetI3Workspaces(I3ListenerMixin, RewriteMixin, Gtk.ScrolledWindow):
+class WidgetI3Workspaces(RewriteMixin, Gtk.ScrolledWindow):
     MAX_WORKSPACE_CNT = 20
     MAX_SCROLL_SPEED = 100
 
     TYPE = "i3_workspaces"
 
-    def __init__(
-        self,
-        i3_conn: Connection,
-        scroll_width: int = 0,
-        scroll_speed: int = 10,
-        max_workspaces: int = 10,
-        always_show: list[str] | None = None,
-        rewrite: dict[str, str] = None,
-    ):
-        super().__init__(i3_conn=i3_conn, rewrite=rewrite)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+        # def __init__(
+        #     self,
+        #     i3_conn: Connection,
+        #     scroll_width: int = 0,
+        #     scroll_speed: int = 10,
+        #     max_workspaces: int = 10,
+        #     always_show: list[str] | None = None,
+        #     rewrite: dict[str, str] = None,
+        # ):
+        #     super().__init__(i3_conn=i3_conn, rewrite=rewrite)
+        #
+        #
 
         self.wsid_map: dict[str, int] = {}
         self.ws_button_map: dict[str, I3WorkspaceButton] = {}
 
         self.always_show = []
-        if always_show is not None:
+        if (always_show := self.cfg.get()) is not None:
             self.always_show.extend([str(name) for name in always_show])
 
         self.max_workspaces = max(1, min(max_workspaces, self.MAX_WORKSPACE_CNT))

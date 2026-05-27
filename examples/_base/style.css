@@ -1,0 +1,44 @@
+window.background {
+    background: unset;
+    //: unset;
+}
+box {
+    background-color: #efdddd;
+    margin: 0 0 0 0;
+}
+#end {
+    padding-right: 8px;
+}
+#start {
+    padding-left: 8px;
+}
+
+.bar-horizontal .bar-widget-icon-start {
+    padding-right: 0.5ex;
+}
+
+.bar-horizontal .bar-widget-icon-end {
+    padding-left: 0.5ex;
+}
+
+.bar-vertical .bar-widget-icon-start {
+    padding-bottom: 0.5ex;
+}
+
+.bar-vertical .bar-widget-icon-end {
+    padding-top: 0.5ex;
+}
+
+#playerctl-previuos,
+#playerctl-play-pause,
+#playerctl-next {
+    padding: 0 8px 0 8px;
+}
+.workspace {
+    padding: 0 8px 0 8px;
+}
+.bar-widget {
+    font-size: 10pt;
+    padding: 0 6px 0 6px;
+    font-family: "Monospace";
+}

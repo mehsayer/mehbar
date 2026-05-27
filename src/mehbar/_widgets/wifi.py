@@ -1,6 +1,10 @@
 from dataclasses import asdict
 
-from mehbar._internals import (
+from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import WidgetBase, WidgetContent
+
+from ._wifi import (
     ConnManBackend,
     IWDBackend,
     NetworkManagerBackend,
@@ -8,8 +12,6 @@ from mehbar._internals import (
     WifiOptions,
     WPASupplicantBackend,
 )
-from mehbar.exceptions import BarConfigError
-from mehbar.widget import WidgetBase
 
 
 class WidgetWifi(WidgetBase):
@@ -36,27 +38,23 @@ class WidgetWifi(WidgetBase):
         "ramp",
     ]
 
-    def __init__(
-        self,
-        interval: int,
-        iface: str,
-        backend: str,
-        label_format: str,
-        ramp: list[str] | None = None,
-    ):
-        super().__init__(interval, label_format, ramp)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        backend = self.cfg.get("backend")
 
         if backend not in self.BACKEND_MAP:
             raise BarConfigError(f"unknown backend: {backend}")
 
         self.dbus_iface = self.BACKEND_MAP[backend](None)
 
-        self.iface = iface
-        self.ramps = []
+        self._last_info = None
+
+        self.iface = self.cfg.get("iface")
 
         self.qry_options = WifiOptions.NONE
 
-        for fld in set(self.formatter.get_fields(label_format)):
+        for fld in set(self.formatter.get_fields(self.content.label)):
             if fld in self.FMT_FIELDS:
                 opt = WifiOptions.for_name(fld)
 
@@ -68,16 +66,22 @@ class WidgetWifi(WidgetBase):
         if self.qry_options == WifiOptions.NONE:
             raise BarConfigError("no known format fields for label")
 
-        if ramp is not None and (nramp := len(ramp) - 2) > 0:
-            self.ramps.extend(ramp[:2])
+    def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
 
-            for sig in range(2, self.MAX_SIGNAL + 2):
-                ramp_idx = int(
-                    min(sig, self.MAX_SIGNAL - 1) / (self.MAX_SIGNAL / nramp)
-                )
-                ramp_val = ramp[2:][ramp_idx]
+        if ramp_level not in self.ramp_index_cache:
+            ramp = self.cfg.get("ramp")
+            content = None
 
-                self.ramps.append(ramp_val)
+            if ramp is not None and ramp:
+                if ramp_level > -1:
+                    level_ = min(ramp_level, self.MAX_SIGNAL - 1)
+                    idx = int(level_ / (self.MAX_SIGNAL / (len(ramp) - 1))) + 1
+                else:
+                    idx = 0
+
+                content = WidgetContent.parse(ramp[idx])
+            self.ramp_index_cache[ramp_level] = content
+        return self.ramp_index_cache[ramp_level]
 
     async def run(self):
 
@@ -86,11 +90,12 @@ class WidgetWifi(WidgetBase):
         while await self.sleep_interval():
             info = await self.dbus_iface.get_info(self.iface, self.qry_options)
 
-            if not info.matches(self._last_value):
-                self._last_value = info
-                ramp = None
+            if not info.matches(self._last_info):
+                self._last_info = info
 
-                if self.ramps and info.percentage is not None:
-                    ramp = self.ramps[info.percentage]
+                ramp_level = -1
 
-                self.format_label_idle(ramp=ramp, **asdict(info))
+                if info.percentage is not None and info.percentage >= 0:
+                    ramp_level = info.percentage
+
+                self.set_new_content_i(ramp_level=ramp_level, **asdict(info))

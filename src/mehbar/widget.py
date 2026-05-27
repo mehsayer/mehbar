@@ -8,21 +8,20 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from functools import Placeholder, cache, lru_cache, partial, partialmethod
-from pathlib import Path
 from typing import Any
 
 import anyio
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
-from i3ipc.aio import Connection
+from gi.repository import GLib, Gtk
 
-from mehbar.actions import (
+from .actions import (
     ActionInterface,
     CallableAction,
     ExecAction,
     GestureMouseClick,
 )
-from mehbar.exceptions import WidgetTerminated
-from mehbar.tools import OptionalFormatter, md5sum_sync, next_prime
+from .exceptions import WidgetTerminated
+from .resource_manager import ResourceManager
+from .tools import OptionalFormatter, next_prime
 
 
 class IconPosition(Enum):
@@ -31,48 +30,30 @@ class IconPosition(Enum):
     NONE = 2
 
 
-# class Hero:
-#     def __init__(self, name, age):
-#         self.name = name
-#         self.age = age
-
-#     def __str__(self):
-#         return self.name + str(self.age)
-
-#     def __hash__(self):
-#         print(hash(str(self)))
-#         return hash(str(self))
-
-#     def __eq__(self,other):
-#         return self.name == other.name and self.age== other.age
-# RE_SPEC = re.compile(
-#     r"""\[\s*(?:
-#     (?:icon\s*=\s*(?P<icon>\w+)\s*(?P<pos>[<>])?\s*(?:;)\s*)
-#     |(?:classes\s*:\s*(?:(?:\s*(?:,)?\s*label\s*=\s*(?P<lcls>[\w\ ]+))?
-#     |(?:\s*(?:,)?\s*icon\s*=\s*(?P<icls>[\w\ ]+))?
-#     |(?:\s*(?:,)?\s*widget\s*=\s*(?P<wcls>[\w\ ]+))?){1,3}\s*(?:;)\s*)
-#     |(?:\s*tooltip\s*=\s*(?P<tooltip>[\w\ ]+)?\s*(?:;)\s*))
-#     {1,3}\s*\]""",
-#     re.X,
-# )
-
-
 @dataclass(frozen=True)
 class WidgetContent:
     RE_SPEC = re.compile(
-        r"""\[\s*(?:
-        (?:icon\s*=\s*(?P<icon>\w+)\s*(?P<pos>[<>])?\s*(?:;)\s*)
-        |(?:classes\s*:\s*(?:(?:\s*(?:,)?\s*label\s*=\s*(?P<lcls>[\w\_\-\!\ ]+))?
-        |(?:\s*(?:,)?\s*icon\s*=\s*(?P<icls>[\w\_\-\!\ ]+))?
-        |(?:\s*(?:,)?\s*widget\s*=\s*(?P<wcls>[\w\_\-\!\ ]+))?){1,3}\s*(?:;)\s*)
-        |(?:\s*tooltip\s*=\s*(?P<tooltip>[\w\_\-\!\ ]+)?\s*(?:;)\s*))
-        {1,3}\s*\]""",
+        r"""\[\s*
+            (?:
+                (?:icon\s*=\s*(?P<icon>[\w\!\_\:\/\.\-]+)\s*
+                (?P<pos>[<>])?\s*(?:;)\s*)
+                |(?:classes\s*:\s*(?:
+                    (?:
+                        \s*(?:,)?\s*label\s*=\s*(?P<lcls>[\w\_\-\!\ ]+))?
+                        |(?:\s*(?:,)?\s*icon\s*=\s*(?P<icls>[\w\_\-\!\ ]+))?
+                        |(?:\s*(?:,)?\s*widget\s*=\s*(?P<wcls>[\w\_\-\!\ ]+))
+                    ?){1,3}\s*(?:;)\s*
+                )
+                |(?:\s*tooltip\s*=\s*
+                    (?P<tooltip>[\w\_\-\!\ ]+)?\s*(?:;)\s*)
+            ){1,3}\s*
+        \]""",
         re.X,
     )
 
     icon: str | None
     icon_position: IconPosition
-    label_text: str | None
+    label: str | None
     tooltip_text: str | None
     icon_classes: set[str] | None
     label_classes: set[str] | None
@@ -82,7 +63,7 @@ class WidgetContent:
         self,
         icon: str | None,
         icon_position: IconPosition | None,
-        label_text: str | None,
+        label: str | None,
         tooltip_text: str | None,
         icon_classes: set[str] | None,
         label_classes: set[str] | None,
@@ -99,10 +80,10 @@ class WidgetContent:
         else:
             icon_position_ = icon_position
 
-        if label_text is None and self.label_text is not None:
-            label_text_ = self.label_text
+        if label is None and self.label is not None:
+            label_ = self.label
         else:
-            label_text_ = label_text
+            label_ = label
 
         if tooltip_text is None and self.tooltip_text is not None:
             tooltip_text_ = self.tooltip_text
@@ -127,7 +108,7 @@ class WidgetContent:
         return self.__class__(
             icon_,
             icon_position_,
-            label_text_,
+            label_,
             tooltip_text_,
             icon_classes_,
             label_classes_,
@@ -171,17 +152,21 @@ class WidgetContent:
         label_classes = None
         widget_classes = None
         tooltip_text = None
-        label_text = None
+        label = None
 
         if text is not None:
             if (match_spec := cls.RE_SPEC.search(text)) is not None:
                 icon = match_spec.group("icon")
 
-                match match_spec.group("pos"):
-                    case ">":
-                        icon_position = IconPosition.END
-                    case "<":
-                        icon_position = IconPosition.START
+                if icon is not None:
+                    if icon in ("!none", "!default"):
+                        icon = None
+
+                    match match_spec.group("pos"):
+                        case ">":
+                            icon_position = IconPosition.END
+                        case "<" | None:
+                            icon_position = IconPosition.START
 
                 if (icon_classes_ := match_spec.group("icls")) is not None:
                     icon_classes = set(icon_classes_.split())
@@ -194,12 +179,12 @@ class WidgetContent:
 
                 tooltip_text = match_spec.group("tooltip")
 
-            label_text = cls.RE_SPEC.sub("", text)
+            label = cls.RE_SPEC.sub("", text)
 
         return cls(
             icon,
             icon_position,
-            label_text,
+            label,
             tooltip_text,
             icon_classes,
             label_classes,
@@ -207,80 +192,10 @@ class WidgetContent:
         )
 
 
-class IconManager:
-    MIN_SIZE = 8
-
-    def __init__(self, pixel_size: int):
-        self.pixel_size = max(self.MIN_SIZE, pixel_size)
-        self.store = {}
-        self.cksums = {}
-
-        self.theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
-
-    def _get_themed_icon(self, icon_id: str) -> Gdk.Paintable | None:
-        paintable = None
-
-        paintable = self.theme.lookup_icon(
-            icon_id,
-            None,
-            self.pixel_size,
-            1,
-            Gtk.TextDirection.NONE,
-            Gtk.IconLookupFlags.NONE,
-        )
-
-        if paintable:
-            paintable = paintable.get_current_image()
-
-        return paintable
-
-    def _get_file_icon(self, path: str | Path) -> Gdk.Paintable | None:
-
-        paintable = None
-
-        try:
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                path, -1, self.pixel_size, preserve_aspect_ratio=True
-            )
-            paintable = Gdk.Texture.new_for_pixbuf(pixbuf)
-
-            if paintable:
-                paintable = paintable.get_current_image()
-
-        except Exception:
-            paintable = self._get_themed_icon("image-missing")
-
-        return paintable
-
-    def load_icon(self, name: str, path: str | Path):
-
-        paintable = None
-
-        if isinstance(path, str) and path.startswith("theme:"):
-            paintable = self._get_themed_icon(path.lstrip("theme:").strip())
-        else:
-            try:
-                cksum = md5sum_sync(path)
-
-                if cksum in self.cksums and self.cksums[cksum] in self.store:
-                    self.store[name] = self.store[self.cksums[cksum]]
-                else:
-                    paintable = self._get_file_icon(path)
-                    self.cksums[cksum] = name
-            except Exception:
-                logging.error("unable to load icon '%s' from file '%s'", name, path)
-                paintable = self._get_themed_icon("image-missing")
-
-        self.store[name] = paintable
-
-    def get_texture(self, name: str) -> Gdk.Paintable:
-        return self.store[name]
-
-
 class RewriteMixin:
-    def __init__(self, *args, rewrite: dict[str, str] | None, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rewrite = rewrite
+        self._rewrite = self.cfg.get("rewrite")
         self.rewrite = lru_cache(maxsize=32)(self.rewrite)
 
     def rewrite(self, text: str) -> str:
@@ -290,62 +205,46 @@ class RewriteMixin:
                 if re.match(pattern, text) is not None:
                     result = re.sub(pattern, repl, text)
                     break
+
         return result
 
 
-class I3ListenerMixin:
-    def __init__(self, *args, i3_conn: Connection, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._i3_conn = i3_conn
-
-    async def get_i3_conn(self):
-        if self._i3_conn is None:
-            self._i3_conn = await Connection().connect()
-        return self._i3_conn
-
-
 class JSONInputMixin:
-    MAX_RAMP = 100
-    MAX_LPS = 10
-
-    def __init__(self, *args, max_lps: int, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.max_lps = max(min(max_lps, self.MAX_LPS), 1)
-
-    async def format_label_i_json_async(self, json_str: str):
+    async def set_content_json_i(self, json_str: str):
         if json_str.strip():
             try:
                 val_map = json.loads(json_str)
-                if "ramp" not in val_map:
-                    ramp_ = None
-
-                    if self.ramps and (level := val_map.get("ramp_level")) is not None:
-                        try:
-                            ramp_ = self.ramps[min(max(int(level), 0), self.MAX_RAMP)]
-                        except ValueError as ex:
-                            logging.error("invalid value in 'ramp_level' field: %s", ex)
-
-                    val_map["ramp"] = ramp_
-
-                self.format_label_i(**val_map)
+                self.set_new_content_i(**val_map)
             except json.JSONDecodeError as ex:
                 logging.error("failed to parse JSON input: %s", ex)
         await anyio.sleep(0.1)
 
 
-class WidgetBase(Gtk.Box):
-    UNIQUE = True
-    INTERVAL_OFFSET = 0.128
-
-    def __init__(
-        self,
-        interval: int = 0,
-        label_format: str | None = None,
-        ramp: list[str] | None = None,
-        icon_manager: IconManager | None = None,
-        max_ramp_level: int = 100,
-    ):
+# TODO: this is for I3 workspaceses
+class WidgetBaseA(Gtk.Box):
+    def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__()
+
+        self.res_mgr = res_mgr
+        self.set_name(name)
+        self.add_css_class("bar-widget")
+
+        self.cfg = res_mgr.get_cfg_for_name(name)
+
+
+class WidgetBase(WidgetBaseA):
+    UNIQUE = True
+    STATIC = False
+    INTERVAL_OFFSET = 0.128
+    DEFAULT_RAMP_INDEX = 100
+
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+        # self.res_mgr = res_mgr
+        # self.set_name(name)
+        # self.add_css_class("bar-widget")
+
+        # self.cfg = res_mgr.get_cfg_for_name(name)
 
         self.label = Gtk.Label.new()
         self.label.add_css_class("bar-widget-label")
@@ -353,12 +252,25 @@ class WidgetBase(Gtk.Box):
         self.icon = Gtk.Image.new()
         self.icon.add_css_class("bar-widget-icon")
 
-        self.content = WidgetContent.parse(label_format)
+        self.content = WidgetContent.parse(self.cfg.get("label"))
 
-        if self.content.icon_position == IconPosition.START:
+        icon_position = IconPosition.NONE
+
+        if self.content.icon_position != IconPosition.NONE:
+            icon_position = self.content.icon_position
+        elif (ramp := self.cfg.get("ramp")) is not None:
+            for ramp_str in ramp:
+                ramp_content = WidgetContent.parse(ramp_str)
+                if ramp_content.icon_position != IconPosition.NONE:
+                    icon_position = ramp_content.icon_position
+                    break
+
+        if icon_position == IconPosition.START:
+            self.icon.add_css_class("bar-widget-icon-start")
             self.append(self.icon)
             self.append(self.label)
-        elif self.content.icon_position == IconPosition.END:
+        elif icon_position == IconPosition.END:
+            self.icon.add_css_class("bar-widget-icon-end")
             self.append(self.label)
             self.append(self.icon)
         else:
@@ -368,10 +280,7 @@ class WidgetBase(Gtk.Box):
         self.set_valign(Gtk.Align.CENTER)
         self.set_homogeneous(False)
 
-        self.icon_manager = icon_manager
-
-        if self.icon_manager is not None:
-            self.icon.set_pixel_size(self.icon_manager.pixel_size)
+        self.icon.set_pixel_size(self.res_mgr.pixel_size)
 
         self.set_label = self.label.set_label
         self.set_from_paintable = self.icon.set_from_paintable
@@ -386,21 +295,27 @@ class WidgetBase(Gtk.Box):
         self._last_label_css_classes = set()
         self._last_icon_css_classes = set()
 
-        # self.cache: dict[str, Any] = {}  # TODO: ?
         self.formatter = OptionalFormatter()
-        self.interval = max(int(interval), 0)
+        self.interval = self.cfg.get("interval", 0)
 
-        self.ramp = ramp
-        self.max_ramp_level = max_ramp_level
         self.ramp_index_cache = {}
 
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
         self.label.set_single_line_mode(True)
 
-        self.add_css_class("bar-widget")
+        if (onclick := self.cfg.get("onclick")) is not None:
+            for button, cmdline in enumerate(onclick):
+                self.onclick_exec(button, cmdline)
 
-        # self.set_icon(self.content.icon)
+        if (onscroll := self.cfg.get("onscroll")) is not None:
+            self.onscroll_exec(*onscroll)
+
+        if (width_chars := self.cfg.get("width_chars", 0)) > 0:
+            self.set_width_chars(width_chars)
+
+        if (max_width_chars := self.cfg.get("width_chars", 0)) > 0:
+            self.set_max_width_chars(max_width_chars)
 
         self.get_content = lru_cache(maxsize=128)(self.get_content)
 
@@ -426,18 +341,23 @@ class WidgetBase(Gtk.Box):
         raise WidgetTerminated()
 
     async def run_wrapper(self):
-        self.loop_token = anyio.lowlevel.current_token()
-        await self.run()
 
-    def _get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
+        if not self.STATIC:
+            self.loop_token = anyio.lowlevel.current_token()
+            await self.run()
+
+    def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
+
+        max_ramp_level = self.cfg.get("max_ramp_level", self.DEFAULT_RAMP_INDEX)
+        ramp = self.cfg.get("ramp")
 
         if ramp_level not in self.ramp_index_cache:
             content = None
 
-            if ramp_level >= 0 and self.ramp is not None:
-                level_ = min(ramp_level, self.max_ramp_level - 1)
-                idx = int(level_ / (self.max_ramp_level / len(self.ramp)))
-                content = WidgetContent.parse(self.ramp[idx])
+            if ramp_level >= 0 and ramp is not None and ramp:
+                level_ = min(ramp_level, max_ramp_level - 1)
+                idx = int(level_ / (max_ramp_level / len(ramp)))
+                content = WidgetContent.parse(ramp[idx])
 
             self.ramp_index_cache[ramp_level] = content
         return self.ramp_index_cache[ramp_level]
@@ -535,8 +455,8 @@ class WidgetBase(Gtk.Box):
             if content.icon is not None:
                 self.set_icon_i(content.icon)
 
-            if content.label_text is not None:
-                self.set_label_i(content.label_text)
+            if content.label is not None:
+                self.set_label_i(content.label)
 
             if content.widget_classes:
                 self.replace_css_classes_i(content.widget_classes)
@@ -554,7 +474,8 @@ class WidgetBase(Gtk.Box):
     def set_icon(self, name: str):
         if name != self._last_icon:
             self._last_icon = name
-            self.icon.set_from_paintable(self.icon_manager.get_texture(name))
+            paintable = self.res_mgr.get_paintable(name)
+            self.icon.set_from_paintable(paintable)
 
     def set_icon_i(self, name: str):
         self.idle_add(self.set_icon, name)
@@ -566,19 +487,19 @@ class WidgetBase(Gtk.Box):
         label_classes = None
         widget_classes = None
 
-        if (ramp_content := self._get_ramp(ramp_level)) is not None:
+        if (ramp_content := self.get_ramp(ramp_level)) is not None:
             icon = ramp_content.icon
             icon_classes = ramp_content.icon_classes
 
-            if self.content.label_text is not None:
-                kwargs["ramp"] = ramp_content.label_text
+            if self.content.label is not None:
+                kwargs["ramp"] = ramp_content.label
 
             icon_classes = ramp_content.icon_classes
             label_classes = ramp_content.label_classes
             widget_classes = ramp_content.widget_classes
 
-        label_text = self.formatter.vformat(self.content.label_text, None, kwargs)
-        tooltip_text = self.formatter.vformat(self.content.label_text, None, kwargs)
+        label_text = self.formatter.vformat(self.content.label, None, kwargs)
+        tooltip_text = self.formatter.vformat(self.content.label, None, kwargs)
 
         return self.content.derive(
             icon,
@@ -637,14 +558,3 @@ class WidgetBase(Gtk.Box):
 
     def elt_run(self, coro: Coroutine, *args):
         anyio.from_thread.run(coro, *args, token=self.loop_token)
-
-
-class JSONInputWidgetBase(JSONInputMixin, WidgetBase):
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        ramp: list[str] | None = None,
-        max_lps: int = 0,
-    ):
-        super().__init__(interval, label_format, ramp, max_lps=max_lps)

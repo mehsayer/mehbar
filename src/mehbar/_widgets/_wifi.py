@@ -4,11 +4,11 @@ import enum
 from dataclasses import dataclass, field
 
 import anyio
-import psutil
 from gi.repository import Gio
 
-from mehbar._internals import DBusFacade
 from mehbar.exceptions import CapabilityError
+
+from ._dbus_facade import DBusFacade
 
 MIN_RSSI = -100
 MAX_RSSI = -30
@@ -75,6 +75,8 @@ def strength_to_rssi(percentage: float | int) -> int:
 
 def fill_missing_r(info: WifiInfo, options: WifiOptions):
 
+    from psutil import net_if_addrs
+
     get_signal = WifiOptions.SIGNAL & options and (
         info.rssi is None or info.percentage is None
     )
@@ -89,7 +91,7 @@ def fill_missing_r(info: WifiInfo, options: WifiOptions):
             info.percentage = rssi_to_strength(info.rssi)
 
     if get_hwaddr or get_ipv4 or get_ipv6:
-        iface_info = psutil.net_if_addrs().get(info.iface, [])
+        iface_info = net_if_addrs().get(info.iface, [])
         for snic in iface_info:
             if get_ipv4 and snic.family.name == "AF_INET":
                 info.ipv4 = snic.address

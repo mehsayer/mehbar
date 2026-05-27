@@ -1,34 +1,25 @@
-from pathlib import Path
-
-import psutil
-
+from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
 
 class WidgetDiskUsage(WidgetBase):
-    TYPE = "disk"
+    TYPE = "disk_usage"
 
-    MAX_PERCENT = 100
-
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        ramp: list[str] | None = None,
-        path: str | Path = "/",
-    ):
-        super().__init__(interval, label_format, ramp, max_ramp_level=self.MAX_PERCENT)
-        self.path = path
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+        self.path = self.cfg.get("path", "/")
         self._last_used = -1
 
     async def run(self):
+        from psutil import disk_usage
+
         while await self.sleep_interval():
-            dusage = psutil.disk_usage(self.path)
+            dusage = disk_usage(self.path)
 
             if self._last_used != dusage.used:
                 self._last_used = dusage.used
 
-                percent = min(round(dusage.percent), self.MAX_PERCENT)
+                percent = min(round(dusage.percent), 100)
 
                 self.set_new_content_i(
                     ramp_level=percent,

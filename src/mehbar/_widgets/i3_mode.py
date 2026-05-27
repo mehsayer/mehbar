@@ -1,38 +1,37 @@
-from i3ipc import Event, ModeEvent
-from i3ipc.aio import Connection
-
-from mehbar.widget import I3ListenerMixin, RewriteMixin, WidgetBase
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import RewriteMixin, WidgetBase
 
 
-class WidgetI3Mode(I3ListenerMixin, RewriteMixin, WidgetBase):
+class WidgetI3Mode(RewriteMixin, WidgetBase):
     TYPE = "i3_mode"
 
-    def __init__(
-        self,
-        label_format: str,
-        i3_conn: Connection,
-        always_show: bool = True,
-        rewrite: dict[str, str] | None = None,
-    ):
-        super().__init__(0, label_format, None, rewrite=rewrite, i3_conn=i3_conn)
-        self.always_show = always_show
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        self.always_show = self.cfg.get("always_show", False)
+        self._mode_cache = {}
+        self._last_mode = None
 
     async def run(self):
 
-        def _dispatch_mode(cur_mode: str):
-            if self._last_value != cur_mode:
-                self._last_value = cur_mode
+        from i3ipc import Event, ModeEvent
 
-                if cur_mode not in self.cache:
+        i3_conn = await self.res_mgr.get_i3_connection_async()
+
+        def _dispatch_mode(cur_mode: str):
+            if self._last_mode != cur_mode:
+                self._last_mode = cur_mode
+
+                if cur_mode not in self._mode_cache:
                     mode = self.rewrite(cur_mode)
-                    self.cache[cur_mode] = mode
-                self.format_label_idle(mode=self.cache[cur_mode])
+                    self._mode_cache[cur_mode] = mode
+                self.set_new_content_i(mode=self._mode_cache[cur_mode])
 
             self.set_visible_idle(not (self.always_show and cur_mode == "default"))
 
         _dispatch_mode("default")
 
-        def _callback_mode(_: Connection, event: ModeEvent) -> None:
+        def _callback_mode(_, event: ModeEvent) -> None:
             _dispatch_mode(event.change)
 
-        (await self.get_i3_conn()).on(Event.MODE, _callback_mode)
+        i3_conn.on(Event.MODE, _callback_mode)

@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import anyio
-import psutil
 
 from mehbar.exceptions import BarConfigError
-from mehbar.widget import IconManager, WidgetBase, WidgetContent
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import WidgetBase, WidgetContent
 
 
 class WidgetTemperature(WidgetBase):
@@ -12,29 +12,27 @@ class WidgetTemperature(WidgetBase):
 
     TYPE = "temperature"
 
-    def __init__(
-        self,
-        label_format: str,
-        interval: int = 15,
-        ramp: list[str] | None = None,
-        source: int | str | Path | None = 0,
-        max_temp: int = 100,
-        icon_manager: IconManager = None,
-    ):
-        self.max_temp = min(max_temp, 200)
-        super().__init__(
-            interval,
-            label_format,
-            ramp,
-            icon_manager=icon_manager,
-            max_ramp_level=self.max_temp,
+    DEFAULT_MAX_TEMP_LO = 100
+    DEFAULT_MAX_TEMP_HI = 200
+
+    DEFAULT_SOURCE = 0
+
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        self.max_temp = min(
+            self.cfg.get("max_temp", self.DEFAULT_MAX_TEMP_LO), self.DEFAULT_MAX_TEMP_HI
         )
 
-        expect_fields = ["ramp"]
+        self.cfg.setdefault("max_ramp_level", self.max_temp)
+
+        source = self.cfg.get("source", self.DEFAULT_SOURCE)
 
         self.path_term = self.get_zone_path(source)
 
         self._coro_get_content = self._get_temp_file
+
+        expect_fields = ["ramp"]
 
         if self.path_term is None:
             self._coro_get_content = self._get_temp_sensors
@@ -46,11 +44,17 @@ class WidgetTemperature(WidgetBase):
 
         self.fields = []
 
-        for fld in set(self.formatter.get_fields(label_format)):
+        unknown_fields = set()
+
+        for fld in set(self.formatter.get_fields(self.content.label)):
             if fld not in expect_fields:
-                raise BarConfigError(f"unknown label field: {fld}")
+                unknown_fields.add(fld)
             else:
                 self.fields.append(fld)
+
+        if unknown_fields:
+            unknown_fields_str = ", ".join([repr(fld) for fld in unknown_fields])
+            raise BarConfigError(f"unknown fields: {unknown_fields_str}")
 
     def get_zone_path(self, source: int | str | Path | None) -> Path:
         n_zone = 0
@@ -72,8 +76,11 @@ class WidgetTemperature(WidgetBase):
         return zone_path
 
     def get_temperatures(self) -> dict[str, int]:
+
+        from psutil import sensors_temperatures
+
         d_temps = {}
-        for name, l_swhtemp in psutil.sensors_temperatures().items():
+        for name, l_swhtemp in sensors_temperatures().items():
             for swhtemp in l_swhtemp:
                 selector = name
                 if swhtemp.label:

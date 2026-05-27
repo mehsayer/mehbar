@@ -3,6 +3,7 @@ from mehbar.widget import WidgetBase
 
 class WidgetStatic(WidgetBase):
     UNIQUE = False
+    STATIC = True
 
     TYPE = "static"
 

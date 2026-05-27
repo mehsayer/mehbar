@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import psutil
-
 from mehbar.exceptions import BarConfigError
 from mehbar.widget import WidgetBase
 
@@ -61,8 +59,11 @@ class WidgetFanSpeed(WidgetBase):
             self.ramps.append(ramp_val)
 
     def get_speeds(self) -> dict[str, int]:
+
+        from psutil import sensors_fans
+
         d_speeds = {}
-        for name, l_sfan in psutil.sensors_fans().items():
+        for name, l_sfan in sensors_fans().items():
             for sfan in l_sfan:
                 selector = name
                 if sfan.label:

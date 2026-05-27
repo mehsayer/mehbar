@@ -5,7 +5,12 @@ import sys
 from functools import partial
 from pathlib import Path
 
-from mehbar.tools import LevelAwareLoggingFormatter, get_config_home, get_system_cs
+from mehbar.tools import (
+    ArgumentsHelpFormatter,
+    LevelAwareLoggingFormatter,
+    get_config_home,
+    get_system_cs,
+)
 
 # Remove '' and current working directory from the first entry
 # of sys.path, if present to avoid using current directory
@@ -33,18 +38,19 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="mehbar",
+        formatter_class=ArgumentsHelpFormatter,
         description="Mehbar, a highly customizable status bar for Linux",
-        epilog="Copyright (c) 2026, Mehsayer",
+        epilog="Command line options override configuration file settings. \nCopyright (c) 2026, Mehsayer",
         suggest_on_error=True,
     )
 
     parser.add_argument(
         "-c",
         "--config-dir",
-        dest="config_dir",
+        dest="cfg_dir",
         type=Path,
         default=config_home,
-        help=f"configuration directory path, defaults to '{config_home}'",
+        help="configuration directory path",
     )
 
     parser.add_argument(
@@ -54,7 +60,7 @@ if __name__ == "__main__":
         dest="log_level",
         metavar="LEVEL",
         default="debug",
-        help=f"log level, one of {', '.join([f"'{s}'" for s in log_levels])}",
+        help=f"log level, one of {', '.join([repr(level) for level in log_levels])}",
     )
 
     parser.add_argument(
@@ -64,6 +70,16 @@ if __name__ == "__main__":
         dest="exc_info",
         help="print exception information to stdout",
     )
+
+    parser.add_argument(
+        "-s",
+        "--color-scheme",
+        choices=color_schemes,
+        default=None,
+        metavar="COLOR_SCHEME",
+        dest="color_scheme",
+        help=f"color scheme name, one of {', '.join([repr(cs) for cs in color_schemes])}",
+    )
     parser.add_argument(
         "-t",
         "--theme",
@@ -72,19 +88,10 @@ if __name__ == "__main__":
         type=str,
         help="theme name",
     )
-    parser.add_argument(
-        "-s",
-        "--color-scheme",
-        choices=color_schemes,
-        default=get_system_cs(),
-        metavar="COLOR_SCHEME",
-        dest="color_scheme",
-        help=f"color scheme, one of {', '.join([f"'{s}'" for s in color_schemes])}",
-    )
     args = parser.parse_args()
 
-    if not args.config_dir.is_dir():
-        parser.error(f"'{args.config_dir}' is not an existing directory")
+    if not args.cfg_dir.is_dir():
+        parser.error(f"'{args.cfg_dir}' is not an existing directory")
 
     kwargs = vars(args)
     log_level = kwargs.pop("log_level").upper()
@@ -101,6 +108,6 @@ if __name__ == "__main__":
     logging.critical = partial(logging.critical, exc_info=exc_info)
     logging.warning = partial(logging.warning, exc_info=exc_info)
 
-    from mehbar._internals import main as _main
+    import mehbar._main
 
-    _main.entrypoint(**kwargs)
+    mehbar._main.entrypoint(**kwargs)

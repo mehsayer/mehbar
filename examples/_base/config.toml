@@ -1,0 +1,121 @@
+[bar]
+height = 48
+icon_size = 32
+layer = "top"
+homogenous = true
+threaded = false
+position = "bottom"
+gaps = [8,8,8,8]
+
+[preload-icons]
+cpu = "icontheme://input-tablet"
+#
+# cpu = "file:///home/meh/cpu-symbolic.svg"
+memory = "theme://memory-symbolic.svg"
+therm = "theme://temp-symbolic.svg"
+wifi0 = "icontheme://network-wireless-offline-symbolic"
+wifi1 = "icontheme://network-wireless-signal-weak-symbolic"
+wifi2 = "icontheme://network-wireless-signal-ok-symbolic"
+wifi3 = "icontheme://network-wireless-signal-excellent-symbolic"
+clock1 = "theme://clock-1-symbolic.svg"
+clock2 = "theme://clock-2-symbolic.svg"
+clock3 = "theme://clock-3-symbolic.svg"
+clock4 = "theme://clock-4-symbolic.svg"
+clock5 = "theme://clock-5-symbolic.svg"
+clock6 = "theme://clock-6-symbolic.svg"
+clock7 = "theme://clock-7-symbolic.svg"
+clock8 = "theme://clock-8-symbolic.svg"
+clock9 = "theme://clock-9-symbolic.svg"
+clock10 = "theme://clock-10-symbolic.svg"
+clock11 = "theme://clock-11-symbolic.svg"
+clock12 = "theme://clock-12-symbolic.svg"
+
+
+[start.temperature]
+interval = 3
+type = "temperature"
+
+label = "[icon=therm;]{ramp} {temp}°C"
+
+
+[start.firefox]
+type = "application"
+app_id = "firefox.desktop"
+label = "[icon=!none;]"
+
+
+[start.tail]
+type = "exec_tail"
+cmdline = ["/home/meh/test.sh"]
+max_ramp_level = 5
+ramp = [
+"X",
+"A",
+"B",
+"C",
+"D",
+"E"
+]
+label = "lbl: {label}, {ramp} - {ramp_level}"
+
+
+[center.cpu]
+interval = 3
+type = "cpu_usage"
+
+label = "[icon=cpu;]{percent}%"
+
+
+[center.memory]
+interval = 3
+type = "memory_usage"
+
+label = "[icon=memory;]{percent}%"
+
+
+[center.disk]
+interval = 3
+type = "disk_usage"
+
+label = "[icon=disk;]{percent}%"
+
+[center.cpu_fq]
+interval = 3
+type = "cpu_fq"
+
+label = "[icon=cpu;]{fq} GHz {percent}%"
+
+# Use phosphor icons https://phosphoricons.com/
+#
+#
+[end.vol]
+type = "pulse_volume"
+label = "{ramp} {percent}%"
+
+ramp = ["MUTE", "1/4", "2/4", "3/4", "4/4"]
+
+[end.wlan]
+type = "wifi"
+iface = "wlan0"
+ramp = [
+    "[icon=wifi0;]0",
+    "[icon=wifi1;]1",
+    "[icon=wifi2;]2",
+    "[icon=wifi3;]3",
+]
+backend = "iwd"
+label = "{ramp} {ssid} {percentage}%"
+
+[end.kboard]
+type = "i3_kblayout"
+label = "{layout}"
+
+[end.kboard.rewrite]
+"Ukr\\w+" = "UA"
+"Eng\\w+" = "EN"
+
+
+[end.date]
+interval = 10
+type = "datetime"
+label = "[icon=theme://clock.svg;]{datetime:%H:%M}"
