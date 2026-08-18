@@ -1,6 +1,6 @@
 [bar]
-height = 48
-icon_size = 32
+height = 32
+icon_size = 24
 layer = "top"
 homogenous = true
 threaded = false
@@ -8,9 +8,9 @@ position = "bottom"
 gaps = [8,8,8,8]
 
 [preload-icons]
-cpu = "icontheme://input-tablet"
+# cpu = "icontheme://input-tablet"
 #
-# cpu = "file:///home/meh/cpu-symbolic.svg"
+cpu = "file:///home/meh/cpu-symbolic.svg"
 memory = "theme://memory-symbolic.svg"
 therm = "theme://temp-symbolic.svg"
 wifi0 = "icontheme://network-wireless-offline-symbolic"
@@ -34,8 +34,8 @@ clock12 = "theme://clock-12-symbolic.svg"
 [start.temperature]
 interval = 3
 type = "temperature"
-
-label = "[icon=therm;]{ramp} {temp}°C"
+# source = "none"
+label = "[icon=therm;]{ramp} {k10temp/Tctl}°C"
 
 
 [start.firefox]
@@ -59,11 +59,17 @@ ramp = [
 label = "lbl: {label}, {ramp} - {ramp_level}"
 
 
+[start.bluetooth]
+type = 'bluetooth-status'
+interval = 3
+label = "[icon=icontheme://bluetooth-symbolic;] BT {ramp}"
+ramp = ["OFF", "ON", "CONNECTED"]
+
 [center.cpu]
 interval = 3
 type = "cpu_usage"
 
-label = "[icon=cpu;]{percent}%"
+label = "[icon=cpu;]{percent}%x"
 
 
 [center.memory]
@@ -83,11 +89,20 @@ label = "[icon=disk;]{percent}%"
 interval = 3
 type = "cpu_fq"
 
-label = "[icon=cpu;]{fq} GHz {percent}%"
+label = "[icon=cpu;]CPU {fq} GHz {percent}%"
 
 # Use phosphor icons https://phosphoricons.com/
 #
 #
+#
+[end.battery]
+type = "battery"
+interval = 3
+ramp = ["1/4", "1/4c", "2/4", "2/4c", "3/4", "3/4c", "4/4", "4/4c"]
+
+label = "BATTERY {ramp} {percent}% {timeleft}"
+
+
 [end.vol]
 type = "pulse_volume"
 label = "{ramp} {percent}%"
@@ -96,7 +111,7 @@ ramp = ["MUTE", "1/4", "2/4", "3/4", "4/4"]
 
 [end.wlan]
 type = "wifi"
-iface = "wlan0"
+iface = "wlp9s0"
 ramp = [
     "[icon=wifi0;]0",
     "[icon=wifi1;]1",
@@ -118,4 +133,4 @@ label = "{layout}"
 [end.date]
 interval = 10
 type = "datetime"
-label = "[icon=theme://clock.svg;]{datetime:%H:%M}"
+label = "[icon=theme://clock-12-symbolic.svg;]{datetime:%H:%M}"

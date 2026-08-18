@@ -1,4 +1,4 @@
-from gi.repository import Gio
+from gi.repository import Gio  # type: ignore
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager

@@ -1,38 +1,42 @@
-from itertools import batched
+import errno
 
+from mehbar.resource_manager import ResourceManager
 from mehbar.tools import FormattableTimeDelta
-from mehbar.widget import WidgetBase
+from mehbar.widget import WidgetBase, WidgetContent
 
 
 class WidgetBattery(WidgetBase):
     MAX_CHARGE = 100
     TYPE = "battery"
 
-    def __init__(self, interval: int, label_format: str, ramp: list[str] | None = None):
-        super().__init__(interval, label_format, ramp)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+        self._last_st = None
 
-        self.ramps = []
+    def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
 
-        if ramp is not None and ramp:
-            # TODO: raise exception if ramp too short, comment on expected format or just throw exception if no battery
+        if ramp_level not in self.ramp_index_cache:
+            ramp = self.cfg.get("ramp")
+            content = None
 
-            self.ramps.extend((ramp[0], ramp[0]))
+            if ramp is not None and ramp:
+                ramp_offset = 0
+                ramp_level_ = 0
 
-            lexpand = []
+                if ramp_level >= 1000:
+                    ramp_level_ = ramp_level % 1000
+                    ramp_offset += 1
 
-            if len(ramp) - 1 % 2 == 1:
-                lexpand.append("?")
+                if ramp_level_ >= 0 and ramp is not None and ramp:
+                    level_ = max(min(ramp_level_, self.MAX_CHARGE - 1), 0)
 
-            ramp_batched = list(batched(ramp[1:] + lexpand, n=2))
+                    idx = int(level_ / (self.MAX_CHARGE / (len(ramp) / 2)))
+                    idx = idx * 2 + ramp_offset
 
-            for charge in range(self.MAX_CHARGE + 1):
-                if (nramp := len(ramp_batched)) > 0:
-                    ramp_idx = int(
-                        min(charge, self.MAX_CHARGE - 1) / (self.MAX_CHARGE / nramp)
-                    )
-                    self.ramps.append(ramp_batched[ramp_idx])
-        else:
-            self.ramps.extend([(None, None)] * (self.MAX_CHARGE + 1))
+                    content = WidgetContent.parse(ramp[idx])
+
+            self.ramp_index_cache[ramp_level] = content
+        return self.ramp_index_cache[ramp_level]
 
     async def run(self):
 
@@ -40,10 +44,10 @@ class WidgetBattery(WidgetBase):
 
         while await self.sleep_interval():
             if (bat_st := sensors_battery()) is not None:
-                if bat_st != self._last_value:
-                    self._last_value = bat_st
+                if bat_st != self._last_st:
+                    self._last_st = bat_st
 
-                    percent = min(int(bat_st.percent), self.MAX_CHARGE)
+                    percent = max(min(int(bat_st.percent), self.MAX_CHARGE), 0)
 
                     timeleft = None
 
@@ -53,11 +57,12 @@ class WidgetBattery(WidgetBase):
                     ]:
                         timeleft = FormattableTimeDelta(bat_st.secsleft)
 
-                    self.format_label_idle(
-                        ramp=self.ramps[percent + 2][bat_st.power_plugged],
-                        timeleft=timeleft,
+                    ramp_level = percent + (int(bat_st.power_plugged) * 1000)
+
+                    self.set_new_content_i(
+                        ramp_level=ramp_level,
                         percent=percent,
+                        timeleft=timeleft,
                     )
             else:
-                self.format_label_idle(ramp=self.ramps[0][0], timeleft=None, percent=0)
-                # raise CapabilityError("no battery detected")
+                raise OSError(errno.ENODEV, "no battery detected")

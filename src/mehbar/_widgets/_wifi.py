@@ -31,7 +31,7 @@ class WifiOptions(enum.Flag):
         ret = cls.NONE
 
         for member in cls:
-            if member.name.casefold() == name.casefold():
+            if member.name is not None and member.name.casefold() == name.casefold():
                 ret = member
                 break
         return ret

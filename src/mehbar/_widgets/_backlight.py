@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import functools
+import io
 import logging
 import operator
 import os
@@ -66,6 +67,25 @@ class BacklightInterface:
     def __init__(self, disp: str | int | None = None):
         self.disp = disp
         self.unpack = struct.Struct(self.EDID_FORMAT).unpack
+        self.fd = -1
+        self.rd_handle = None
+        self.wr_handle = None
+
+    async def fd_write_async(self, data: bytes | bytearray):
+        if self.wr_handle is None:
+            wr_file_obj = io.FileIO(self.fd, "w", closefd=False)
+            self.wr_handle = anyio.wrap_file(wr_file_obj)
+
+        if (nwritten := await self.wr_handle.write(data)) < len(data):
+            raise IOError("not all data is written")
+        return nwritten
+
+    async def fd_read_async(self, length: int) -> bytes:
+        if self.rd_handle is None:
+            rd_file_obj = io.FileIO(self.fd, "r", closefd=False)
+            self.rd_handle = anyio.wrap_file(rd_file_obj)
+
+        return await self.rd_handle.read(length)
 
     @classmethod
     def i2c_to_drm(cls, dev_num: int) -> str | None:
@@ -105,7 +125,6 @@ class BacklightInterface:
 
         for path_card in Path(cls.PATH_DRM).glob(cls.GLOB_DRM_CARD):
             connected = False
-
             path_status = path_card / "status"
 
             if path_status.is_file():
@@ -130,6 +149,7 @@ class BacklightInterface:
             i2c_num = cls.drm_to_i2c(path_card.name)
 
             ret.append((path_card.name, i2c_num, connected))
+
         return ret
 
     def get_dev_id(self, edid: bytes | str) -> tuple[str | None, str | None]:
@@ -330,10 +350,16 @@ class BacklightACPI(BacklightInterface):
     async def close(self):
         self.device = None
 
+        if self.rd_handle is not None:
+            await self.rd_handle.close()
+
+        if self.wr_handle is not None:
+            await self.wr_handle.close()
+
         if self.fd >= 0:
             os.fsync(self.fd)
             os.close(self.fd)
-            self.fd = -1
+        self.fd = -1
         await anyio.lowlevel.checkpoint()
 
     async def get_level(self) -> float:
@@ -396,7 +422,7 @@ class BacklightDDCCI(BacklightInterface):
 
             try:
                 self._open_sync(i2c_dev, self.I2C_ADDR_EDID)
-                name, serial = await self.get_edid()
+                name, serial = await self.get_edid()  # This takes forever
             except OSError:
                 pass
             finally:
@@ -451,7 +477,6 @@ class BacklightDDCCI(BacklightInterface):
         return ret
 
     async def init(self):
-
         device = await self._get_display()
         await self.close()
 
@@ -472,9 +497,7 @@ class BacklightDDCCI(BacklightInterface):
         except OSError as ex:
             if ex.errno == errno.EBUSY:
                 fcntl.ioctl(self.fd, self.I2C_SLAVE_FORCE, addr)
-                logging.warning(
-                    "%s:0x%02x: device or address in use, using anyway", str(path), addr
-                )
+                logging.warning("%s:0x%02x: device or address in use", str(path), addr)
             else:
                 raise
 
@@ -483,13 +506,22 @@ class BacklightDDCCI(BacklightInterface):
     async def close(self):
         self.device = None
 
+        if self.rd_handle is not None:
+            await self.rd_handle.close()
+
+        if self.wr_handle is not None:
+            await self.wr_handle.close()
+
         if self.fd >= 0:
+            os.fsync(self.fd)
             os.close(self.fd)
-            self.fd = -1
+        self.fd = -1
         await anyio.lowlevel.checkpoint()
 
-    def _read_sync(self, n: int) -> bytes:
-        buff = os.read(self.fd, n + 3)
+    async def _read(self, n: int) -> bytes:
+
+        buff = await self.fd_read_async(n + 3)
+        # buff = os.read(self.fd, n + 3)
 
         if buff[0] != self.I2C_SRC_ADDR:
             raise ValueError("response from unknown source")
@@ -502,21 +534,21 @@ class BacklightDDCCI(BacklightInterface):
 
         return buff[2:-1]
 
-    def _write_sync(self, *data: int) -> int:
+    async def _write(self, *data: int) -> int:
         msg = bytearray(data)
         msg.insert(0, len(msg) | self.I2C_WR_LEN)
         msg.insert(0, self.I2C_WR_SUB)
         msg.append(functools.reduce(operator.xor, msg, self.I2C_SRC_ADDR))
 
-        return os.write(self.fd, msg)
+        return await self.fd_write_async(msg)
 
-    def write_sync(self, vcpopcode: int, value: int) -> int:
-        return self._write_sync(self.I2C_CHG, vcpopcode, *value.to_bytes(2, "big"))
+    async def write(self, vcpopcode: int, value: int) -> int:
+        return await self._write(self.I2C_CHG, vcpopcode, *value.to_bytes(2, "big"))
 
     async def read(self, vcpopcode: int) -> tuple[int, int]:
-        self._write_sync(self.I2C_READ, vcpopcode)
+        await self._write(self.I2C_READ, vcpopcode)
         await anyio.sleep(self.API_PAUSE)
-        buff = self._read_sync(self.BUFFSZ_READ)
+        buff = await self._read(self.BUFFSZ_READ)
 
         if buff[0] != self.I2C_PRE_VALUE:
             raise ValueError("not a feature response")
@@ -531,9 +563,10 @@ class BacklightDDCCI(BacklightInterface):
         return int.from_bytes(buff[4:6], "big"), int.from_bytes(buff[6:8], "big")
 
     async def get_edid(self) -> tuple[str | None, str | None]:
-        os.write(self.fd, self.I2C_IDX_EDID.to_bytes())
+        await self.fd_write_async(self.I2C_IDX_EDID.to_bytes())
         await anyio.sleep(self.API_PAUSE)
-        buff = os.read(self.fd, self.BUFFSZ_EDID)
+        # buff = os.read(self.fd, self.BUFFSZ_EDID)
+        buff = await self.fd_read_async(self.BUFFSZ_EDID)
         return self.get_dev_id(buff)
 
     async def get_level(self) -> int:
@@ -541,4 +574,4 @@ class BacklightDDCCI(BacklightInterface):
 
     async def set_level(self, value: int | float):
         if self.device is not None:
-            self.write_sync(self.I2C_IDX_BL, int(value * self.device.mul))
+            await self.write(self.I2C_IDX_BL, int(value * self.device.mul))

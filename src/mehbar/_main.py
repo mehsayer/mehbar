@@ -30,13 +30,13 @@ for soname in ["libgtk4-layer-shell.so.0", "libgtk4-layer-shell.so.1"]:
         ctypes.CDLL(soname)
         cdll_failed.clear()
         break
-    except OSError:
-        cdll_failed.add(soname)
+    except OSError as ex:
+        cdll_failed.add((soname, ex))
 
 if cdll_failed:
-    logging.critical(
-        "failed to load GTK4 layer shell library, tried: %s", ", ".join(cdll_failed)
-    )
+    logging.critical("failed to load GTK4 layer shell library")
+    for soname, ex in cdll_failed:
+        logging.critical("tried '%s': %s", soname, ex)
     sys.exit(1)
 try:
     gi.require_version("Gtk", "4.0")
@@ -46,7 +46,7 @@ except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
-from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell
+from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
 import mehbar._widgets as builtin_widgets
 
@@ -70,9 +70,9 @@ def get_primary_mon_width() -> int:
 
 class MehBarGUI(Gtk.ApplicationWindow):
     WIDGETS = [
-        # "WidgetBacklight",
-        # "WidgetBattery",
-        # "WidgetBluetooth",
+        "WidgetBacklight",
+        "WidgetBattery",
+        "WidgetBluetoothStatus",
         "WidgetCPUUsage",
         "WidgetCPUFrequency",
         "WidgetDateTime",
@@ -115,9 +115,9 @@ class MehBarGUI(Gtk.ApplicationWindow):
     def __init__(
         self,
         *args,
-        cfg_dir: Path | None,
+        cfg_dir: Path,
         theme: str | None,
-        color_scheme: str,
+        color_scheme: str | None,
         **kwargs: str,
     ):
 
@@ -134,12 +134,14 @@ class MehBarGUI(Gtk.ApplicationWindow):
                     raise BarConfigError(f"duplicate widget type '{wtype}'")
 
                 self.wtype_map[wtype] = cl
+            else:
+                raise BarConfigError(f"unknown widget class '{widget_cls_name}'")
 
         self._unique_wtypes = set()
 
         self.res_mgr = ResourceManager(cfg_dir, theme, color_scheme)
 
-        bar_cfg = self.res_mgr.cfg.get("bar")
+        bar_cfg = self.res_mgr.cfg.get("bar", {})
 
         is_homogenous = bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS)
 
@@ -221,7 +223,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         if widget_unique:
             if wtype in self._unique_wtypes:
-                raise BarConfigError(f"windget of type '{wtype}' must be unique")
+                raise BarConfigError(f"widget of type '{wtype}' must be unique")
             self._unique_wtypes.add(wtype)
 
         return widget_cls
@@ -245,7 +247,8 @@ class MehBarGUI(Gtk.ApplicationWindow):
             widget.shutdown()
             GLib.idle_add(widget.set_visible, False)
             parent = widget.get_parent()
-            GLib.idle_add(parent.remove, widget)
+            if parent is not None:
+                GLib.idle_add(parent.remove, widget)
             logging.error("disabling widget '%s': %s", name, ex)
 
     async def run_widgets(self):
@@ -275,7 +278,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
 class MehBar(Gtk.Application):
     def __init__(
         self,
-        cfg_dir: Path | None,
+        cfg_dir: Path,
         theme: str | None = None,
         color_scheme: str | None = "system",
         **kwargs: str,

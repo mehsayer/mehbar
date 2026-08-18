@@ -12,68 +12,53 @@ class WidgetTemperature(WidgetBase):
 
     TYPE = "temperature"
 
-    DEFAULT_MAX_TEMP_LO = 100
-    DEFAULT_MAX_TEMP_HI = 200
-
-    DEFAULT_SOURCE = 0
+    MAX_TEMP_LO = 100
+    MAX_TEMP_HI = 150
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
 
+        exp_flds = ["ramp"]
+
         self.max_temp = min(
-            self.cfg.get("max_temp", self.DEFAULT_MAX_TEMP_LO), self.DEFAULT_MAX_TEMP_HI
+            self.cfg.get("max_temp", self.MAX_TEMP_LO), self.MAX_TEMP_HI
         )
 
         self.cfg.setdefault("max_ramp_level", self.max_temp)
 
-        source = self.cfg.get("source", self.DEFAULT_SOURCE)
+        source = self.cfg.get("path")
 
-        self.path_term = self.get_zone_path(source)
+        self.path_term = None
 
-        self._coro_get_content = self._get_temp_file
-
-        expect_fields = ["ramp"]
+        # TOML does not have a proper 'null' value
+        if source is not None and source.lower() not in ["none", "null"]:
+            self.path_term = Path(source)
 
         if self.path_term is None:
             self._coro_get_content = self._get_temp_sensors
-            expect_fields.extend(self.get_temperatures().keys())
+            exp_flds.extend(self.get_temperatures().keys())
         elif not self.path_term.is_file():
-            raise BarConfigError(f"source file does not exist: {self.path_term}")
+            raise OSError(f"source file does not exist: {self.path_term}")
         else:
-            expect_fields.append("temp")
+            self._coro_get_content = self._get_temp_file
+            exp_flds.append("temp")
 
         self.fields = []
 
-        unknown_fields = set()
+        unk_flds = set()
 
         for fld in set(self.formatter.get_fields(self.content.label)):
-            if fld not in expect_fields:
-                unknown_fields.add(fld)
+            if fld not in exp_flds:
+                unk_flds.add(fld)
             else:
                 self.fields.append(fld)
 
-        if unknown_fields:
-            unknown_fields_str = ", ".join([repr(fld) for fld in unknown_fields])
-            raise BarConfigError(f"unknown fields: {unknown_fields_str}")
-
-    def get_zone_path(self, source: int | str | Path | None) -> Path:
-        n_zone = 0
-
-        zone_path = None
-
-        if source is not None:
-            try:
-                n_zone = int(source)
-            except ValueError:
-                if isinstance(source, str):
-                    source_path = Path(source)
-                    if source_path.is_absolute():
-                        zone_path = source_path
-                elif isinstance(source, Path):
-                    zone_path = source
-            else:
-                zone_path = Path(f"/sys/class/thermal/thermal_zone{n_zone}/temp")
-        return zone_path
+        if unk_flds:
+            unk_flds_s = ", ".join([repr(fld) for fld in unk_flds])
+            exp_flds_s = ", ".join(repr(fld) for fld in exp_flds if fld != "ramp")
+            raise BarConfigError(
+                f"unknown fields: {unk_flds_s}; expected one or more of: {exp_flds_s}"
+            )
 
     def get_temperatures(self) -> dict[str, int]:
 
@@ -91,11 +76,12 @@ class WidgetTemperature(WidgetBase):
 
     async def _get_temp_file(self) -> WidgetContent:
         temp = 0
-        async with await anyio.open_file(self.path_term, "r") as fhandle:
-            temp = int(await fhandle.readline()) // 1000
+        if self.path_term is not None:
+            async with await anyio.open_file(self.path_term, "r") as fhandle:
+                temp = int(await fhandle.readline()) // 1000
 
         norm_temp = min(temp, self.max_temp)
-        return self.get_content(norm_temp, temp=norm_temp)
+        return self.get_content(norm_temp, temp=str(norm_temp))
 
     async def _get_temp_sensors(self) -> WidgetContent:
         d_temps = {}
@@ -106,7 +92,7 @@ class WidgetTemperature(WidgetBase):
                 max_curr_temp = max(max_curr_temp, temp)
                 d_temps[fld] = temp
 
-        await anyio.lowlevel.checkpoint()
+        await anyio.lowlevel.checkpoint()  # type: ignore
 
         norm_temp = min(max_curr_temp, self.max_temp)
 

@@ -8,23 +8,35 @@ from importlib import resources
 from pathlib import Path
 
 #!/usr/bin/env python3
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TypeVar
 
 import gi
 
 NULL = object()
 
+KT = TypeVar("KT")
+VT = TypeVar("VT")
 
-class SelectorDict(dict):
-    def select(self, path: str, default: Any | None = NULL):
-        result = self
+
+class Singleton(type):
+    _inst = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._inst:
+            cls._inst[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._inst[cls]
+
+
+class SelectorDict(dict[KT, VT]):
+    def select(self, path: str, default: VT | None = NULL):
+        result: VT | dict[KT, VT] | None = self
 
         is_error = False
 
         parts = path.split(".")
         while parts:
             if (part := parts.pop(0)) in result:
-                result = result[part]
+                result = result[part]  # type: ignore
                 if not isinstance(result, dict):
                     if parts:
                         is_error = True
@@ -243,7 +255,7 @@ def get_system_cs() -> str:
     ret = "system"
 
     try:
-        from gi.repository import Gio
+        from gi.repository import Gio  # type: ignore
 
         gsettings_schema = "org.gnome.desktop.interface"
 
@@ -261,7 +273,7 @@ def get_system_cs() -> str:
     if ret is None:
         try:
             gi.require_version("Adw", "1")
-            from gi.repository import Adw
+            from gi.repository import Adw  # type: ignore
 
             style_mgr = Adw.StyleManager.get_default()
             ret = "dark" if style_mgr.get_dark() else "light"
@@ -289,7 +301,7 @@ class OptionalFormatter(string.Formatter):
         format_string: str,
         args: Sequence[Any],
         kwargs: Mapping[str, Any],
-    ) -> str:
+    ) -> str:  # type: ignore
 
         if args:
             raise ValueError("non-keyword arguments are not supported")
@@ -335,7 +347,7 @@ class LevelAwareLoggingFormatter(logging.Formatter):
         return True
 
     def formatException(self, ei):
-        return super().formatException(ei) if ei != self.NO_EXC_INFO else None
+        return super().formatException(ei) if ei != self.NO_EXC_INFO else ""
 
     def formatMessage(self, record: logging.LogRecord):
         return self._styles[record.levelno].format(record)

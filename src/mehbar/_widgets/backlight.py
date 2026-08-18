@@ -1,10 +1,13 @@
+import logging
 from functools import partial
 
 import anyio
 
-from mehbar._internals import BacklightACPI, BacklightDDCCI, BacklightInterface
 from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
+
+from ._backlight import BacklightACPI, BacklightDDCCI, BacklightInterface
 
 
 class WidgetBacklight(WidgetBase):
@@ -12,27 +15,24 @@ class WidgetBacklight(WidgetBase):
     UNIQUE = False
     TYPE = "backlight"
 
-    def __init__(
-        self,
-        device: int | str,
-        interval: int,
-        label_format: str,
-        ramp: list[str] | None = None,
-        driver: str = "acpi",
-        step: int = 10,
-    ):
-        super().__init__(interval, label_format, ramp)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        driver = self.cfg.get("driver")
+        device = self.cfg.get("device")
+
+        logging.debug("DASDA")
+
+        if driver is None:
+            raise BarConfigError("no driver specified in configuration")
 
         if driver not in self.DRIVERS:
-            drivers = ", ".join(self.DRIVERS.keys())
-            raise BarConfigError(f"{driver}: unknown backend, not one of: {drivers}.")
+            drivers = ", ".join([f"'{s}'" for s in self.DRIVERS.keys()])
+            raise BarConfigError(f"{driver}: unknown driver, not one of: {drivers}.")
 
         self.driver = self.DRIVERS[driver](device)
 
-        self.ramp = ramp
-        self.ramps = []
-
-        self.step = max(step, 1)
+        self.step = max(self.cfg.get("step", 1), 1)
 
         self.sstream, self.rstream = anyio.create_memory_object_stream[int](8)
 
@@ -40,18 +40,6 @@ class WidgetBacklight(WidgetBase):
             partial(self.elt_run_sync, self._change_level, self.step),
             partial(self.elt_run_sync, self._change_level, -self.step),
         )
-
-    def _build_ramps(self, driver: BacklightInterface):
-
-        if self.ramp is not None:
-            max_level = driver.device.max_level
-
-            for level in range(max_level + 1):
-                if self.ramp and (nramp := len(self.ramp)) > 0:
-                    ramp_idx = int(min(level, max_level - 1) / (max_level / nramp))
-                    ramp_val = self.ramp[ramp_idx]
-
-                    self.ramps.append(ramp_val)
 
     def _change_level(self, level: int):
         try:
@@ -73,7 +61,6 @@ class WidgetBacklight(WidgetBase):
 
         max_level = driver.device.max_level
 
-        # while True:
         async with self.rstream:
             async for level in self.rstream:
                 if level == 0:
@@ -84,18 +71,12 @@ class WidgetBacklight(WidgetBase):
                 if display_level != self._last_value:
                     self._last_value = display_level
 
-                    norm_level = int(max(0, min(display_level, max_level)))
+                    percent = int(max(0, min(display_level, max_level)))
 
-                    ramp_ = None
-                    if self.ramps:
-                        ramp_ = self.ramps[norm_level]
-
-                    self.format_label_idle(ramp=ramp_, level=norm_level)
+                    self.set_new_content_i(ramp_level=percent, percent=percent)
 
     async def run(self):
         async with self.driver as bl_driver:
-            self._build_ramps(bl_driver)
-
             async with anyio.create_task_group() as grp:
                 grp.start_soon(self._poll, bl_driver)
                 grp.start_soon(self._consume, bl_driver)

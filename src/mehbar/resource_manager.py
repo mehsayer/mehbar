@@ -1,6 +1,5 @@
 __lazy_modules__ = ["importlib", "io", "mehbar", "copy"]
 
-import copy
 import importlib
 import io
 import itertools
@@ -15,11 +14,12 @@ from urllib.parse import urlsplit
 
 import gi
 
+from . import tools
+from .exceptions import BarConfigError
+
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
-
-from . import exceptions, tools
+from gi.repository import Gdk, Gio, GLib, Gtk  # type: ignore
 
 _INFINITY = float("inf")
 
@@ -160,14 +160,17 @@ class ResourceManager:
 
                 tools.overlay_dict_r(self._cfg, cfg_res)
 
-            if (theme := self._cfg["bar"].get("theme")) is not None:
-                path_theme_res = f"{self.COMMON_RESOURCE_PREFIX}/{theme}"
-                cfg_theme = self._read_cfg_resource(path_theme_res)
+            try:
+                if (theme := self._cfg["bar"].get("theme")) is not None:
+                    path_theme_res = f"{self.COMMON_RESOURCE_PREFIX}/{theme}"
+                    cfg_theme = self._read_cfg_resource(path_theme_res)
 
-                if not cfg_theme:
-                    path_theme_dir = self.cfg_dir / "themes" / theme
-                    cfg_theme = self._read_cfg_dir(path_theme_dir)
-                tools.overlay_dict_r(self._cfg, cfg_theme)
+                    if not cfg_theme:
+                        path_theme_dir = self.cfg_dir / "themes" / theme
+                        cfg_theme = self._read_cfg_dir(path_theme_dir)
+                    tools.overlay_dict_r(self._cfg, cfg_theme)
+            except KeyError as ex:
+                raise BarConfigError(f"configuration key {ex} not found") from ex
 
         return tools.SelectorDict(self._cfg)
 
@@ -279,16 +282,16 @@ class ResourceManager:
                 break
         return cfg
 
-    def _parse_cfg_io(self, fhandle: IO, parser) -> dict[str, Any]:
+    def _parse_cfg_io(self, fhandle: IO, parser_name) -> dict[str, Any]:
 
         cfg = {}
 
         try:
-            parser = importlib.import_module(parser)
+            parser = importlib.import_module(parser_name)
             parser_func = getattr(parser, "safe_load", parser.load)
             cfg = parser_func(fhandle)
         except Exception:
-            logging.debug("cannot parse configuration file with '%s'", parser.__name__)
+            logging.debug("cannot parse configuration file with '%s'", parser_name)
             pass
 
         return cfg
@@ -395,7 +398,6 @@ class ResourceManager:
             if res_bytes := Gio.resources_lookup_data(path, 0):
                 css += res_bytes.get_data()
                 css += b"\n"
-            # res_bytes.unref()
         except GLib.GError:
             logging.debug("resource at '%s' does not exist", path)
 
@@ -431,17 +433,12 @@ class ResourceManager:
 
     def _get_resource_icon(self, path: Path | str) -> Gdk.Paintable | None:
 
-        paintable = None
         res_file = Gio.File.new_for_uri(str(path))
 
-        try:
-            paintable = Gtk.IconPaintable.new_for_file(
-                res_file, self.cfg["bar"]["icon_size"], 1
-            )
-        except Exception:
-            paintable = self._get_themed_icon("image-missing")
+        if not res_file.query_exists():
+            raise FileNotFoundError(f"resource at path '{path}' does not exist")
 
-        return paintable
+        return Gtk.IconPaintable.new_for_file(res_file, self.cfg["bar"]["icon_size"], 1)
 
     def _load_icon(self, name: str, url: str):
 
@@ -473,15 +470,11 @@ class ResourceManager:
                         self._cksums[cksum] = name
                 else:
                     if url_.scheme:
-                        logging.error(
-                            "unknown URL scheme for icon '%s'",
-                            name,
-                        )
-                    else:
-                        logging.error("icon '%s' has not been preloaded", name)
+                        raise ValueError(f"unknown URL scheme: {url_.scheme}")
+                    raise ValueError(f"image at path '{path}' not preloaded")
 
-            except Exception:
-                logging.error("failed to load icon '%s' from '%s'", name, path)
+            except Exception as ex:
+                logging.error("failed to load icon '%s': %s", name, ex)
                 paintable = self._get_themed_icon("image-missing")
 
         self._icons[name] = paintable

@@ -11,7 +11,7 @@ from functools import Placeholder, cache, lru_cache, partial, partialmethod
 from typing import Any
 
 import anyio
-from gi.repository import GLib, Gtk
+from gi.repository import GLib, Gtk  # type: ignore
 
 from .actions import (
     ActionInterface,
@@ -75,10 +75,10 @@ class WidgetContent:
         else:
             icon_ = icon
 
+        icon_position_: IconPosition | None = icon_position
+
         if icon_position is None and self.icon_position is not None:
             icon_position_ = self.icon_position
-        else:
-            icon_position_ = icon_position
 
         if label is None and self.label is not None:
             label_ = self.label
@@ -195,7 +195,7 @@ class WidgetContent:
 class RewriteMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rewrite = self.cfg.get("rewrite")
+        self._rewrite = self.cfg.get("rewrite")  # type: ignore
         self.rewrite = lru_cache(maxsize=32)(self.rewrite)
 
     def rewrite(self, text: str) -> str:
@@ -236,15 +236,12 @@ class WidgetBase(WidgetBaseA):
     UNIQUE = True
     STATIC = False
     INTERVAL_OFFSET = 0.128
+    DFL_RAMP_IDX = 100
+    # DEPRECATED:
     DEFAULT_RAMP_INDEX = 100
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
-        # self.res_mgr = res_mgr
-        # self.set_name(name)
-        # self.add_css_class("bar-widget")
-
-        # self.cfg = res_mgr.get_cfg_for_name(name)
 
         self.label = Gtk.Label.new()
         self.label.add_css_class("bar-widget-label")
@@ -325,7 +322,9 @@ class WidgetBase(WidgetBaseA):
                 self._init_loop = True
 
                 interval_offset = random.random() % self.INTERVAL_OFFSET
-                interval = next_prime((self.interval + interval_offset) * 1000) / 1000
+                interval = (
+                    next_prime(int((self.interval + interval_offset) * 1000)) / 1000
+                )
 
                 await anyio.sleep(interval)
             else:
@@ -341,17 +340,16 @@ class WidgetBase(WidgetBaseA):
         raise WidgetTerminated()
 
     async def run_wrapper(self):
-
         if not self.STATIC:
             self.loop_token = anyio.lowlevel.current_token()
             await self.run()
 
     def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
 
-        max_ramp_level = self.cfg.get("max_ramp_level", self.DEFAULT_RAMP_INDEX)
-        ramp = self.cfg.get("ramp")
-
         if ramp_level not in self.ramp_index_cache:
+            max_ramp_level = self.cfg.get("max_ramp_level", self.DEFAULT_RAMP_INDEX)
+            ramp = self.cfg.get("ramp")
+
             content = None
 
             if ramp_level >= 0 and ramp is not None and ramp:
@@ -383,8 +381,8 @@ class WidgetBase(WidgetBaseA):
             widget.add_css_class(class_name)
 
     def _add_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
-        func = None
-        callback = None
+        func: Callable | None = None
+        callback: ... = None
 
         if names and "!none" not in names and not names.issubset(store):
             func = partial(self._add_css_classes, widget, names)
@@ -398,8 +396,8 @@ class WidgetBase(WidgetBaseA):
             widget.remove_css_class(class_name)
 
     def _rm_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
-        func = None
-        callback = None
+        func: Callable | None = None
+        callback: ... = None
         if not names or "!none" in names:
             if store:
                 func = partial(self._rm_css_classes, widget, store)
@@ -471,8 +469,8 @@ class WidgetBase(WidgetBaseA):
 
     set_new_content_i = partialmethod(_set_content_i, None)
 
-    def set_icon(self, name: str):
-        if name != self._last_icon:
+    def set_icon(self, name: str | None):
+        if name is not None and name != self._last_icon:
             self._last_icon = name
             paintable = self.res_mgr.get_paintable(name)
             self.icon.set_from_paintable(paintable)

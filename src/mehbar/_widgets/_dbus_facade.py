@@ -33,6 +33,12 @@ class DBusFacade:
 
         self._ensure_available()
 
+    def signal_subscribe(self, *args, **kwargs):
+        self.bus.signal_subscribe(*args, **kwargs)
+
+    def signal_unsubscribe(self, subscription_id: int):
+        self.bus.signal_unsubscribe(subscription_id)
+
     def _ensure_available(self):
         proxy = Gio.DBusProxy.new_sync(
             self.bus,
@@ -78,7 +84,7 @@ class DBusFacade:
         self,
         iface: str,
         obj: str | GLib.Variant,
-        flags: Gio.DBusCallFlags | None = None,
+        flags: Gio.DBusProxyFlags | None = None,
     ) -> Gio.DBusProxy:
 
         if isinstance(obj, GLib.Variant):

@@ -14,3 +14,13 @@ Highly customizable GPU-accelerated Wayland status bar
 ACTION=="add", SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
 udevadm control --reload-rules
 udevadm trigger
+ 
+
+
+dasdasada
+
+
+
+sffafsafa
+
+

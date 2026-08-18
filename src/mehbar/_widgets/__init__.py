@@ -1,6 +1,6 @@
-# from mehbar._widgets.backlight import WidgetBacklight
-# from mehbar._widgets.battery import WidgetBattery
-# from mehbar._widgets.bluetooth import WidgetBluetooth
+from mehbar._widgets.backlight import WidgetBacklight
+from mehbar._widgets.battery import WidgetBattery
+from mehbar._widgets.bluetooth import WidgetBluetoothStatus
 from mehbar._widgets.cpu_fq import WidgetCPUFrequency
 from mehbar._widgets.cpu_usage import WidgetCPUUsage
 from mehbar._widgets.datetime import WidgetDateTime
@@ -34,7 +34,7 @@ __all__ = [
     "WidgetApplication",
     "WidgetBacklight",
     "WidgetBattery",
-    "WidgetBluetooth",
+    "WidgetBluetoothStatus",
     "WidgetCPUUsage",
     "WidgetCPUFrequency",
     "WidgetDateTime",

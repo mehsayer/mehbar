@@ -1,7 +1,7 @@
 window.background {
     background: unset;
-    //: unset;
 }
+
 box {
     background-color: #efdddd;
     margin: 0 0 0 0;
@@ -37,6 +37,8 @@ box {
 .workspace {
     padding: 0 8px 0 8px;
 }
+
+
 .bar-widget {
     font-size: 10pt;
     padding: 0 6px 0 6px;
