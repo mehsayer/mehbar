@@ -1,95 +1,54 @@
-from pathlib import Path
-
-from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
+
+from ._sensors import check_fields, get_source_path, read_int, sensor_values
+
+
+def get_speeds() -> dict[str, int]:
+    from psutil import sensors_fans
+
+    return sensor_values(sensors_fans())
 
 
 class WidgetFanSpeed(WidgetBase):
+    """Shows fan speeds read either from the `path` file, as the `rpm` field,
+    or from hardware sensors, as `<chip>/<label>` fields. The ramp follows
+    the highest speed shown, or of all fans if none is."""
+
     UNIQUE = False
     TYPE = "fan_speed"
 
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        ramp: list[str] | None = None,
-        source: str | Path | None = None,
-        max_speed: int = 5000,
-    ):
-        super().__init__(interval, label_format, ramp)
+    DEFAULT_MAX_SPEED = 5000
+    MAX_SPEED = 8000
 
-        self.path_fan = None
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
 
-        expect_fields = ["ramp"]
-        if source is not None:
-            if isinstance(source, str):
-                source_path = Path(source)
-                if source_path.is_absolute():
-                    self.path_fan = source_path
-            elif isinstance(source, Path):
-                self.path_fan = source
+        max_speed = self.cfg.get("max_speed", self.DEFAULT_MAX_SPEED)
+        self.max_speed = max(min(max_speed, self.MAX_SPEED), 1)
 
-        if self.path_fan is None:
-            expect_fields.extend(self.get_speeds().keys())
-        elif not self.path_fan.is_file():
-            raise BarConfigError(
-                f"fan speed source file does not exist: {self.path_fan}"
-            )
+        self.max_ramp_level = self.cfg.get("max_ramp_level", self.max_speed)
+
+        self.path = get_source_path(self.cfg.get("path"))
+
+        label_fields = self.formatter.get_fields(self.content.label)
+
+        if self.path is None:
+            self.fields = check_fields(label_fields, get_speeds())
         else:
-            expect_fields.append("rpm")
+            self.fields = check_fields(label_fields, ["rpm"])
 
-        self.fields = []
+    def _read(self) -> tuple[int, dict[str, int]]:
+        if self.path is not None:
+            rpm = read_int(self.path)
+            return rpm, {"rpm": rpm}
 
-        for fld in set(self.formatter.get_fields(label_format)):
-            if fld not in expect_fields:
-                raise BarConfigError(f"unknown label field: {fld}")
-            else:
-                self.fields.append(fld)
+        speeds = get_speeds()
+        shown = {fld: speeds[fld] for fld in self.fields if fld in speeds}
 
-        self.max_speed = max(min(max_speed, 8000), 0)
-        self.ramps = []
-
-        for speed in range(max_speed + 1):
-            ramp_val = str()
-
-            if ramp is not None and (nramp := len(ramp)) > 0:
-                ramp_idx = int(min(speed, max_speed - 1) / (max_speed / nramp))
-                ramp_val = ramp[ramp_idx]
-
-            self.ramps.append(ramp_val)
-
-    def get_speeds(self) -> dict[str, int]:
-
-        from psutil import sensors_fans
-
-        d_speeds = {}
-        for name, l_sfan in sensors_fans().items():
-            for sfan in l_sfan:
-                selector = name
-                if sfan.label:
-                    selector += "/" + sfan.label
-
-                d_speeds[selector] = round(sfan.current)
-        return d_speeds
+        return max((shown or speeds).values(), default=0), shown
 
     async def run(self):
         while await self.sleep_interval():
-            if self.path_fan:
-                speed = 0
-                with open(self.path_fan, "r", encoding="ascii") as fhandle:
-                    speed = int(fhandle.readline())
-
-                norm_speed = min(speed, self.max_speed)
-                self.format_label_idle(ramp=self.ramps[norm_speed], rpm=norm_speed)
-
-            else:
-                d_speeds = {}
-                max_curr_speed = 0
-
-                for fld, speed in self.get_speeds().items():
-                    if fld in self.fields:
-                        max_curr_speed = max(max_curr_speed, speed)
-                        d_speeds[fld] = speed
-
-                norm_speed = min(max_curr_speed, self.max_speed)
-                self.format_label_idle(ramp=self.ramps[norm_speed], **d_speeds)
+            fastest, values = self._read()
+            self.set_new_content_i(min(max(fastest, 0), self.max_speed), **values)

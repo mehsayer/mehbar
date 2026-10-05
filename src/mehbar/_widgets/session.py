@@ -3,6 +3,8 @@ import os
 import socket
 import time
 
+import anyio
+
 from mehbar.resource_manager import ResourceManager
 from mehbar.tools import FormattableTimeDelta
 from mehbar.widget import WidgetBase
@@ -17,9 +19,11 @@ class WidgetSession(WidgetBase):
         self.username = getpass.getuser()
         self.uid = os.getuid()
         self.hostname = socket.gethostname()
-        self.fqdn = socket.getfqdn()
 
     async def run(self):
+        # may take a while if DNS is slow
+        fqdn = await anyio.to_thread.run_sync(socket.getfqdn)
+
         while await self.sleep_interval():
             uptime_sec = time.clock_gettime(time.CLOCK_BOOTTIME)
 
@@ -27,6 +31,6 @@ class WidgetSession(WidgetBase):
                 username=self.username,
                 uid=self.uid,
                 hostname=self.hostname,
-                fqdn=self.fqdn,
+                fqdn=fqdn,
                 uptime=FormattableTimeDelta(uptime_sec),
             )

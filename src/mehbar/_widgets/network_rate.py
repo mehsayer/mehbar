@@ -1,89 +1,75 @@
-import time
 from operator import itemgetter
 
-import psutil
+import anyio
 
+from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
 
 class WidgetNetworkRate(WidgetBase):
+    """Shows transfer rates of the `iface` network interface, or all
+    interfaces. `conv_map` maps unit names to their size in bytes."""
+
     DEFAULT_CONVERSIONS = {"Kb/s": 1024, "Mb/s": 1024**2, "b/s": 1}
     UNIQUE = False
     TYPE = "network_rate"
 
-    def __init__(
-        self,
-        interval: int,
-        iface: str,
-        label_format: str,
-        conv_map: dict[int, str] | None = None,
-    ):
-        super().__init__(interval, label_format)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
 
-        if conv_map is None:
-            conv_map = self.DEFAULT_CONVERSIONS
+        conv_map = self.cfg.get("conv_map") or self.DEFAULT_CONVERSIONS
+
+        if not isinstance(conv_map, dict) or not all(
+            isinstance(div, (int, float)) and div > 0 for div in conv_map.values()
+        ):
+            raise BarConfigError("'conv_map' must map unit names to positive numbers")
 
         self.conv_map = sorted(conv_map.items(), key=itemgetter(1), reverse=True)
-        self.iface = None
 
-        self.rate_ts = time.monotonic()
-        self.bytes_sent = 0
-        self.bytes_recv = 0
+        iface = self.cfg.get("iface")
+        self.iface = None if iface in (None, "all") else iface
 
-        if iface is not None and iface != "all":
-            self.iface = iface
-
-    def _conv_rate(self, rate_bytes: int):
-
-        ret = None
-
+    def _conv_rate(self, rate_bytes: int) -> tuple[int, str]:
         for unit, divisor in self.conv_map:
-            if (value := rate_bytes // divisor) > 0:
-                ret = (value, unit)
-                break
+            if (value := int(rate_bytes // divisor)) > 0:
+                return value, unit
 
-        if ret is None:
-            ret = (rate_bytes, self.conv_map[-1][0])
+        return rate_bytes, self.conv_map[-1][0]
 
-        return ret
+    def _read(self):
+        import psutil
+
+        if self.iface is None:
+            return psutil.net_io_counters()
+        return psutil.net_io_counters(pernic=True).get(self.iface)
 
     async def run(self):
+        last_info = None
+        last_ts = 0.0
+
         while await self.sleep_interval():
-            rx_rate = 0
+            info = self._read()
+            now = anyio.current_time()
+
             tx_rate = 0
+            rx_rate = 0
 
-            if self.iface is None:
-                info = psutil.net_io_counters()
-            else:
-                info = psutil.net_io_counters(pernic=True).get(self.iface)
+            if info is not None and last_info is not None and now > last_ts:
+                t_delta = now - last_ts
+                # counters are reset when the interface is recreated
+                tx_rate = max(0, int((info.bytes_sent - last_info.bytes_sent) / t_delta))
+                rx_rate = max(0, int((info.bytes_recv - last_info.bytes_recv) / t_delta))
 
-            if info is not None:
-                t_now = time.monotonic()
+            last_info = info
+            last_ts = now
 
-                t_delta = t_now - self.rate_ts
-                self.rate_ts = t_now
+            rate_tx, unit_tx = self._conv_rate(tx_rate)
+            rate_rx, unit_rx = self._conv_rate(rx_rate)
 
-                tx_delta = info.bytes_sent - self.bytes_sent
-                self.bytes_sent = info.bytes_sent
-
-                rx_delta = info.bytes_recv - self.bytes_recv
-                self.bytes_recv = info.bytes_recv
-
-                if t_delta > 0:
-                    tx_rate = int(tx_delta / t_delta)
-                    rx_rate = int(rx_delta / t_delta)
-
-                comp_rate = complex(tx_rate, rx_rate)
-
-                if self._last_value != comp_rate:
-                    self._last_value = comp_rate
-
-                    res_tx = self._conv_rate(tx_rate)
-                    res_rx = self._conv_rate(rx_rate)
-
-                    self.format_label_idle(
-                        rate_tx=res_tx[0],
-                        unit_tx=res_tx[1],
-                        rate_rx=res_rx[0],
-                        unit_rx=res_rx[1],
-                    )
+            self.set_new_content_i(
+                rate_tx=rate_tx,
+                unit_tx=unit_tx,
+                rate_rx=rate_rx,
+                unit_rx=unit_rx,
+            )

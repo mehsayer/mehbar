@@ -1,14 +1,18 @@
 #!/bin/bash
 
-if [[ $# -ne 2 ]]; then
-    echo "two command line arguments expected" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "usage: $(basename -- "${0}") <PREFIX> <RESOURCE DIRECTORY> [OUTPUT FILE]" >&2
+    exit 1
 fi
 
 PREFIX="${1}"
 RES_DIR="${2}"
+# defaults to <RESOURCE DIRECTORY>/<RESOURCE DIRECTORY NAME>.gresource
+OUTPUT="${3:-}"
 
 if [[ -z ${PREFIX} ]]; then
     echo "no prefix specified" >&2
+    exit 1
 fi
 
 typeset -i CNT=0
@@ -23,7 +27,12 @@ if [[ -d "${RES_DIR}" ]]; then
 
     MANIFEST="${RES_DIR}/$(basename -- "${RES_DIR}").gresource.xml"
 
-    MANIFEST_BASE="$(basename -- ${MANIFEST})"
+    MANIFEST_BASE="$(basename -- "${MANIFEST}")"
+
+    if [[ -z ${OUTPUT} ]]; then
+        OUTPUT="${MANIFEST%.xml}"
+    fi
+    OUTPUT="$(realpath -m -- "${OUTPUT}")"
 
     rm -f -- "${MANIFEST}"
 
@@ -31,18 +40,19 @@ if [[ -d "${RES_DIR}" ]]; then
     printf '<gresources>\n' >> "${MANIFEST}"
     printf '\t<gresource prefix="%s">\n' "${PREFIX}" >> "${MANIFEST}"
 
-    while read RES_FILE; do
+    while read -r RES_FILE; do
 
         ATTRS='compressed="true"'
         RES_FILE="${RES_FILE#./}"
 
-        RES_FILE_BASE="$(basename -- ${RES_FILE})"
+        RES_FILE_BASE="$(basename -- "${RES_FILE}")"
 
-        if [[ ${RES_FILE[1]} != '.' && "${MANIFEST_BASE}" != "${RES_FILE_BASE}" ]]; then
+        # skip hidden files and the manifest itself
+        if [[ ${RES_FILE_BASE:0:1} != '.' && "${MANIFEST_BASE}" != "${RES_FILE_BASE}" ]]; then
 
             RES_FILE_PATH="${RES_DIR}/${RES_FILE}"
 
-            RES_FILE_EXT="$(echo ${RES_FILE##*.} | tr '[:upper:]' '[:lower:]')"
+            RES_FILE_EXT="$(echo "${RES_FILE##*.}" | tr '[:upper:]' '[:lower:]')"
 
             if [[ "${RES_FILE_EXT}" != gresource ]]; then
 
@@ -64,7 +74,6 @@ if [[ -d "${RES_DIR}" ]]; then
                     echo
                 fi
 
-                unset ATTR_STRIP
                 if [[ "${RES_FILE_EXT}" =~ ^(xml|svg|htm|html|ui)$ ]]; then
                     ATTRS+=' preprocess="xml-stripblanks"'
                 fi
@@ -72,29 +81,29 @@ if [[ -d "${RES_DIR}" ]]; then
                 printf '\t\t<file alias="%s" %s>%s</file>\n' \
                     "${RES_FILE}" \
                     "${ATTRS}" \
-                    "${RES_FILE}" >> ${MANIFEST}
+                    "${RES_FILE}" >> "${MANIFEST}"
 
-                printf "%s' processed (%d)\n" "${RES_FILE}" $((++CNT))
+                printf "'%s' processed (%d)\n" "${RES_FILE}" $((++CNT))
             fi
         fi
 
     done < <(cd -- "${RES_DIR}" && find . -type f)
 
     if [[ $CNT -eq 0 ]]; then
-        printf "no resource files found in '%s'" "${RES_DIR}"
+        printf "no resource files found in '%s'\n" "${RES_DIR}" >&2
         rm -f -- "${MANIFEST}"
+        exit 1
     fi
 
     printf '\t</gresource>\n' >> "${MANIFEST}"
     printf '</gresources>\n' >> "${MANIFEST}"
 
 
-   (cd -- ${RES_DIR} && glib-compile-resources -- $(basename -- "${MANIFEST}"))
+    (cd -- "${RES_DIR}" && glib-compile-resources --target="${OUTPUT}" -- "${MANIFEST_BASE}") || exit 1
 
-    if [[ -f "${MANIFEST%.xml}" ]]; then
-       printf "created '%s':\n" "${MANIFEST%.xml}"
-       gresource details "${MANIFEST%.xml}"
-    fi
+    printf "created '%s':\n" "${OUTPUT}"
+    gresource details "${OUTPUT}"
 else
-    printf "'%s': no such directory" "${RES_DIR}"
+    printf "'%s': no such directory\n" "${RES_DIR}" >&2
+    exit 1
 fi

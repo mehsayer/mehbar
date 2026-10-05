@@ -8,9 +8,8 @@ import logging
 import os
 import signal
 import sys
-from functools import partial
+import threading
 from pathlib import Path
-from threading import Thread
 
 try:
     import anyio
@@ -23,7 +22,9 @@ except ImportError:
     logging.critical("PyGObject (PyGObject) module is not found")
     sys.exit(1)
 
-cdll_failed = set()
+# GTK4 layer shell library must be loaded before libwayland-client, that is
+# before GTK is imported
+cdll_failed = []
 
 for soname in ["libgtk4-layer-shell.so.0", "libgtk4-layer-shell.so.1"]:
     try:
@@ -31,7 +32,7 @@ for soname in ["libgtk4-layer-shell.so.0", "libgtk4-layer-shell.so.1"]:
         cdll_failed.clear()
         break
     except OSError as ex:
-        cdll_failed.add((soname, ex))
+        cdll_failed.append((soname, ex))
 
 if cdll_failed:
     logging.critical("failed to load GTK4 layer shell library")
@@ -48,56 +49,29 @@ except ValueError as ex:
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
-import mehbar._widgets as builtin_widgets
-
+from . import _widgets
 from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
-from .widget import WidgetBase
+from .widget import BarWidget
 
 # GSK_RENDERER=cairo GDK_BACKEND=wayland
 
 
-def get_primary_mon_width() -> int:
-    display = Gdk.Display.get_default()
-    width = 0
-    for monitor in display.get_monitors():
-        geometry = monitor.get_geometry()
-        width = (geometry.y + geometry.width) - geometry.y
-        if width > 0:
-            break
-    return width
+def describe_exception(ex: BaseException) -> str:
+    # report the first actual error, not the group wrapping it
+    while isinstance(ex, BaseExceptionGroup) and ex.exceptions:
+        ex = ex.exceptions[0]
+
+    if isinstance(ex, BarConfigError):
+        return str(ex)
+
+    if msg := str(ex):
+        return f"{type(ex).__name__}: {msg}"
+
+    return type(ex).__name__
 
 
 class MehBarGUI(Gtk.ApplicationWindow):
-    WIDGETS = [
-        "WidgetBacklight",
-        "WidgetBattery",
-        "WidgetBluetoothStatus",
-        "WidgetCPUUsage",
-        "WidgetCPUFrequency",
-        "WidgetDateTime",
-        "WidgetDiskUsage",
-        "WidgetApplication",
-        "WidgetExecRepeat",
-        "WidgetExecTail",
-        # "WidgetFanSpeed",
-        # "WidgetFile",
-        "WidgetI3KeyboardLayout",
-        # "WidgetI3Mode",
-        # "WidgetI3Scratchpad",
-        # "WidgetI3Window",
-        # "WidgetI3Workspaces",
-        "WidgetMemoryUsage",
-        # "WidgetNetworkRate",
-        # "WidgetPlayerCtl",
-        "WidgetPulseVolume",
-        # "WidgetSession",
-        # "WidgetStatic",
-        "WidgetTemperature",
-        "WidgetWifi",
-        # "WidgetWired",
-    ]
-
     ANCHOR_MAP = {"top": Gtk4LayerShell.Edge.TOP, "bottom": Gtk4LayerShell.Edge.BOTTOM}
     LAYER_MAP = {
         "top": Gtk4LayerShell.Layer.TOP,
@@ -107,10 +81,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
     MIN_WIDTH = 256
     DEFAULT_ANCHOR = "top"
     DEFAULT_LAYER = "top"
-    DEFAULT_GAPS = [0, 0]
     DEFAULT_HOMOGENOUS = True
-    DEFAULT_ICON_SIZE = 16
-    SECTION_NAMES = ["start", "center", "end"]
+    SECTION_NAMES = ResourceManager.WIDGET_CFG_SECTIONS
+    NAMESPACE = "mehbar"
+    STOP_TIMEOUT = 3
 
     def __init__(
         self,
@@ -118,56 +92,84 @@ class MehBarGUI(Gtk.ApplicationWindow):
         cfg_dir: Path,
         theme: str | None,
         color_scheme: str | None,
-        **kwargs: str,
+        **kwargs,
     ):
-
         super().__init__(*args, **kwargs)
-
-        self.wtype_map = {}
-
-        for widget_cls_name in self.WIDGETS:
-            if (cl := getattr(builtin_widgets, widget_cls_name, None)) is not None:
-                if (wtype := getattr(cl, "TYPE", None)) is None:
-                    raise BarConfigError(f"unknown widget type for class '{cl!s}'")
-
-                if wtype in self.wtype_map:
-                    raise BarConfigError(f"duplicate widget type '{wtype}'")
-
-                self.wtype_map[wtype] = cl
-            else:
-                raise BarConfigError(f"unknown widget class '{widget_cls_name}'")
-
-        self._unique_wtypes = set()
 
         self.res_mgr = ResourceManager(cfg_dir, theme, color_scheme)
 
-        bar_cfg = self.res_mgr.cfg.get("bar", {})
+        self._worker: threading.Thread | None = None
+        self._cancel_scope: anyio.CancelScope | None = None
 
-        is_homogenous = bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS)
+        bar_cfg = self.res_mgr.bar_cfg
 
-        anchor = self.ANCHOR_MAP.get(
-            bar_cfg.get("position", self.DEFAULT_ANCHOR), self.DEFAULT_ANCHOR
-        )
+        is_homogenous = bool(bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS))
 
-        layer = self.LAYER_MAP.get(
-            bar_cfg.get("layer", self.DEFAULT_LAYER), self.DEFAULT_LAYER
-        )
+        self._setup_layer_shell(bar_cfg)
+        self._load_css()
+
+        self.main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
+        self.main_box.set_homogeneous(is_homogenous)
+        self.main_box.set_valign(Gtk.Align.FILL)
+        self.main_box.add_css_class("bar-horizontal")
+
+        self.boxes: dict[str, Gtk.Box] = {}
+
+        for section in self.SECTION_NAMES:
+            box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
+            box.set_name(section)
+            box.set_valign(Gtk.Align.CENTER)
+            self.boxes[section] = box
+            self.main_box.append(box)
+
+        self.boxes["start"].set_halign(Gtk.Align.START)
+        self.boxes["end"].set_halign(Gtk.Align.END)
+
+        if is_homogenous:
+            self.boxes["center"].set_halign(Gtk.Align.CENTER)
+        else:
+            self.boxes["center"].set_halign(Gtk.Align.START)
+            self.boxes["center"].set_hexpand(True)
+
+        self.set_child(self.main_box)
+
+        self.widgets = self._create_widgets()
+
+    def _setup_layer_shell(self, bar_cfg: dict):
+        position = bar_cfg.get("position", self.DEFAULT_ANCHOR)
+        if (anchor := self.ANCHOR_MAP.get(position)) is None:
+            logging.warning("unknown bar position '%s'", position)
+            anchor = self.ANCHOR_MAP[self.DEFAULT_ANCHOR]
+
+        layer_name = bar_cfg.get("layer", self.DEFAULT_LAYER)
+        if (layer := self.LAYER_MAP.get(layer_name)) is None:
+            logging.warning("unknown bar layer '%s'", layer_name)
+            layer = self.LAYER_MAP[self.DEFAULT_LAYER]
 
         height = bar_cfg.get("height", self.MIN_HEIGHT)
+        if not isinstance(height, int) or height < 1:
+            raise BarConfigError("bar height must be a positive integer")
 
-        total_width = bar_cfg.get("width", 0)
+        width = bar_cfg.get("width", 0)
+        if not isinstance(width, int):
+            raise BarConfigError("bar width must be an integer")
 
-        gaps = bar_cfg.get("gaps", self.DEFAULT_GAPS)
+        gaps = bar_cfg.get("gaps", [0, 0, 0, 0])
 
-        if len(gaps) == 2:
-            gaps *= 2
-        elif len(gaps) != 4 or not all([gap >= 0 for gap in gaps]):
+        if not isinstance(gaps, list) or not all(
+            isinstance(gap, int) and gap >= 0 for gap in gaps
+        ):
+            logging.warning("bar gaps must be a list of non-negative integers")
+            gaps = [0, 0, 0, 0]
+        elif len(gaps) == 2:
+            # vertical, horizontal
+            gaps = gaps * 2
+        elif len(gaps) != 4:
+            logging.warning("bar gaps must be a list of either 2 or 4 integers")
             gaps = [0, 0, 0, 0]
 
-        if total_width <= self.MIN_WIDTH:
-            total_width = get_primary_mon_width()
-
         Gtk4LayerShell.init_for_window(self)
+        Gtk4LayerShell.set_namespace(self, self.NAMESPACE)
         Gtk4LayerShell.set_layer(self, layer)
         Gtk4LayerShell.set_anchor(self, anchor, True)
         Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, gaps[0])
@@ -176,103 +178,127 @@ class MehBarGUI(Gtk.ApplicationWindow):
         Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, gaps[3])
         Gtk4LayerShell.auto_exclusive_zone_enable(self)
 
-        self.set_default_size(total_width - (gaps[1] + gaps[3]), height)
-
-        style_provider = Gtk.CssProvider()
-        css_stylesheet = self.res_mgr.css
-        style_provider.load_from_data(css_stylesheet)
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display().get_default(),
-            style_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
-
-        self.main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.main_box.set_homogeneous(is_homogenous)
-        self.start_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.start_box.set_halign(Gtk.Align.START)
-        self.start_box.set_valign(Gtk.Align.CENTER)
-        self.center_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.center_box.set_valign(Gtk.Align.CENTER)
-
-        if is_homogenous:
-            self.center_box.set_halign(Gtk.Align.CENTER)
+        if width > self.MIN_WIDTH:
+            # fixed width, centered horizontally
+            self.set_default_size(width, height)
         else:
-            self.center_box.set_halign(Gtk.Align.START)
-            self.center_box.set_hexpand(True)
+            # stretch over the whole output
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, True)
+            self.set_default_size(-1, height)
 
-        self.end_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.end_box.set_halign(Gtk.Align.END)
-        self.end_box.set_valign(Gtk.Align.CENTER)
-        self.main_box.set_valign(Gtk.Align.FILL)
-        self.main_box.append(self.start_box)
-        self.main_box.append(self.center_box)
-        self.main_box.append(self.end_box)
+    def _load_css(self):
+        display = Gdk.Display.get_default()
 
-        self.main_box.add_css_class("bar-horizontal")
+        # later style sheets take precedence
+        for prio, (label, css) in enumerate(self.res_mgr.get_css()):
 
-        self.set_child(self.main_box)
+            def _on_error(_provider, section, error, label=label):
+                loc = section.get_start_location()
+                logging.warning(
+                    "%s:%d:%d: %s", label, loc.lines + 1, loc.line_chars + 1, error.message
+                )
 
-    def _widget_class_for_type(self, wtype: str) -> WidgetBase:
+            provider = Gtk.CssProvider()
+            provider.connect("parsing-error", _on_error)
+            provider.load_from_bytes(GLib.Bytes.new(css))
 
-        if (widget_cls := self.wtype_map.get(wtype, None)) is None:
-            types = ", ".join(self.wtype_map.keys())
-            raise BarConfigError(f"widget type '{wtype}' is not one of: {types}")
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + prio
+            )
 
-        widget_unique = getattr(widget_cls, "UNIQUE", True)
-
-        if widget_unique:
-            if wtype in self._unique_wtypes:
-                raise BarConfigError(f"widget of type '{wtype}' must be unique")
-            self._unique_wtypes.add(wtype)
-
-        return widget_cls
-
-    def new_widget_for(self, name: str) -> WidgetBase:
-        widget = None
-
+    def _new_widget(self, name: str, unique_types: set[str]) -> BarWidget:
         widget_cfg = self.res_mgr.get_cfg_for_name(name)
 
-        if (widget_type := widget_cfg.get("type", None)) is None:
+        if (wtype := widget_cfg.get("type")) is None:
             raise BarConfigError("widget type not specified")
 
-        widget_cls = self._widget_class_for_type(widget_type)
-        widget = widget_cls(name, self.res_mgr)
-        return widget
+        widget_cls = _widgets.get_widget_class(wtype)
 
-    async def _run_widget(self, widget: Gtk.WidgetBase, name: str | None = None):
+        if widget_cls.UNIQUE:
+            if wtype in unique_types:
+                raise BarConfigError(f"widget of type '{wtype}' must be unique")
+            unique_types.add(wtype)
+
+        return widget_cls(name, self.res_mgr)
+
+    def _create_widgets(self) -> list[tuple[str, BarWidget]]:
+        widgets = []
+        unique_types: set[str] = set()
+
+        for section in self.SECTION_NAMES:
+            box = self.boxes[section]
+
+            for name, widget_cfg in self.res_mgr.cfg.get(section, {}).items():
+                try:
+                    widget = self._new_widget(name, unique_types)
+                except Exception as ex:
+                    logging.error(
+                        "disabling widget '%s' of type '%s': %s",
+                        name,
+                        widget_cfg.get("type", "unknown"),
+                        describe_exception(ex),
+                    )
+                else:
+                    box.append(widget)
+                    widgets.append((name, widget))
+
+        return widgets
+
+    # Widget event loop, runs on its own thread
+
+    def start_widgets(self):
+        self._worker = threading.Thread(
+            target=self._worker_main, name="AIO Worker", daemon=True
+        )
+        self._worker.start()
+
+    def stop_widgets(self):
+        """Cancels widget tasks and waits for the event loop to finish."""
+        if self._worker is None or not self._worker.is_alive():
+            return
+
+        if (scope := self._cancel_scope) is not None:
+            self.res_mgr.loop.call_soon(scope.cancel)
+
+        self._worker.join(self.STOP_TIMEOUT)
+
+        if self._worker.is_alive():
+            logging.warning("widgets did not stop in %d seconds", self.STOP_TIMEOUT)
+
+    def _worker_main(self):
+        try:
+            anyio.run(self._run_widgets, backend="asyncio")
+        except Exception as ex:
+            logging.critical("widget event loop failed: %s", describe_exception(ex))
+
+    async def _run_widgets(self):
+        self.res_mgr.loop.attach()
+
+        try:
+            async with anyio.create_task_group() as grp:
+                self._cancel_scope = grp.cancel_scope
+
+                for name, widget in self.widgets:
+                    grp.start_soon(self._run_widget, widget, name, name=name)
+
+                # keep event driven widgets alive
+                await anyio.sleep_forever()
+        finally:
+            self.res_mgr.loop.detach()
+
+    def _remove_widget(self, widget: BarWidget) -> bool:
+        if (parent := widget.get_parent()) is not None:
+            parent.remove(widget)
+        return GLib.SOURCE_REMOVE
+
+    async def _run_widget(self, widget: BarWidget, name: str):
         try:
             await widget.run_wrapper()
         except Exception as ex:
             widget.shutdown()
-            GLib.idle_add(widget.set_visible, False)
-            parent = widget.get_parent()
-            if parent is not None:
-                GLib.idle_add(parent.remove, widget)
-            logging.error("disabling widget '%s': %s", name, ex)
-
-    async def run_widgets(self):
-        async with anyio.create_task_group() as grp:
-            for section in self.SECTION_NAMES:
-                box = getattr(self, f"{section}_box")
-
-                if section in self.res_mgr.cfg:
-                    for name, widget_cfg in self.res_mgr.cfg[section].items():
-                        try:
-                            widget = self.new_widget_for(name)
-                        except BarConfigError as ex:
-                            widget_type = widget_cfg.get("type", "unknown")
-                            logging.error(
-                                "disabling widget '%s' of type '%s': %s",
-                                name,
-                                widget_type,
-                                ex,
-                            )
-                        else:
-                            GLib.idle_add(box.append, widget)
-                            grp.start_soon(self._run_widget, widget, name, name=name)
-                else:
-                    GLib.idle_add(box.set_visible, False)
+            GLib.idle_add(self._remove_widget, widget)
+            logging.error("disabling widget '%s': %s", name, describe_exception(ex))
 
 
 class MehBar(Gtk.Application):
@@ -280,45 +306,61 @@ class MehBar(Gtk.Application):
         self,
         cfg_dir: Path,
         theme: str | None = None,
-        color_scheme: str | None = "system",
-        **kwargs: str,
+        color_scheme: str | None = None,
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.cfg_dir = cfg_dir
         self.theme = theme
         self.color_scheme = color_scheme
-        self.win = None
+        self.win: MehBarGUI | None = None
+        self.exit_status = os.EX_OK
 
-    def do_activate(self, *args, **kwargs):
-        if (active_window := self.get_active_window()) is not None:
-            active_window.present()
-        else:
-            try:
-                self.win = MehBarGUI(
-                    cfg_dir=self.cfg_dir,
-                    theme=self.theme,
-                    color_scheme=self.color_scheme,
-                    application=self,
-                )
+    def do_activate(self):
+        if self.win is not None:
+            self.win.present()
+            return
 
-                t_module_worker = Thread(
-                    target=partial(anyio.run, self.win.run_widgets), name="AIO Worker"
-                )
-                t_module_worker.daemon = True
-                t_module_worker.start()
-                self.win.present()
-            except Exception as ex:
-                logging.critical("initialization failed: %s", ex)
-                sys.exit(os.EX_SOFTWARE)
+        try:
+            self.win = MehBarGUI(
+                cfg_dir=self.cfg_dir,
+                theme=self.theme,
+                color_scheme=self.color_scheme,
+                application=self,
+            )
+        except BarConfigError as ex:
+            logging.critical("configuration error: %s", ex)
+            self.exit_status = os.EX_CONFIG
+            self.quit()
+            return
+        except Exception as ex:
+            logging.critical("initialization failed: %s", describe_exception(ex))
+            self.exit_status = os.EX_SOFTWARE
+            self.quit()
+            return
+
+        self.win.present()
+        self.win.start_widgets()
+
+    def do_shutdown(self):
+        if self.win is not None:
+            self.win.stop_widgets()
+        Gtk.Application.do_shutdown(self)
 
 
-def entrypoint(*args, **kwargs):
-
+def entrypoint(**kwargs) -> int:
     app = MehBar(
         application_id="org.codeberg.mehsayer.mehbar",
-        flags=Gio.ApplicationFlags.FLAGS_NONE,
+        flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
         **kwargs,
     )
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, app.quit)
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, app.quit)
-    app.run()
+
+    def _quit():
+        app.quit()
+        return GLib.SOURCE_REMOVE
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _quit)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _quit)
+
+    status = app.run()
+    return status or app.exit_status

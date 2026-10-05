@@ -1,57 +1,59 @@
 import logging
-import time
+import os
 from pathlib import Path
 
 import anyio
 
-from mehbar.widget import JSONInputWidgetBase
+from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import JSONInputMixin, WidgetBase
 
 
-class WidgetFile(JSONInputWidgetBase):
+def read_last_line(path: Path, chunk_size: int = 4096) -> str | None:
+    """Returns the last non-empty line of the file, reading from its end."""
+    with open(path, "rb") as fhandle:
+        end = fhandle.seek(0, os.SEEK_END)
+        buff = b""
+
+        while end > 0:
+            start = max(0, end - chunk_size)
+            fhandle.seek(start)
+            buff = fhandle.read(end - start) + buff
+            end = start
+
+            lines = [ln for ln in buff.splitlines() if ln.strip()]
+
+            # the first line may be incomplete unless the whole file is read
+            if len(lines) > 1 or (lines and end == 0):
+                return lines[-1].decode(errors="replace")
+
+    return None
+
+
+class WidgetFile(JSONInputMixin, WidgetBase):
+    """Shows the last line of a file every interval. See `JSONInputMixin` for
+    the format of the line."""
+
     UNIQUE = False
     MAX_FAILURES = 10
     TYPE = "file"
 
-    def __init__(
-        self,
-        interval: int,
-        label_format: str,
-        path: str | Path,
-        ramp: list[str] | None = None,
-        max_lps: int = 5,
-    ):
-        super().__init__(interval, label_format, ramp, max_lps)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        if not (path := self.cfg.get("path")):
+            raise BarConfigError("'path' must be specified")
+
         self.path = Path(path)
 
     async def run(self):
-
         failed_cnt = 0
+
         while await self.sleep_interval():
-            # on first iteration, skip all lines up until the last one
-            skip = self.path.is_file()
             try:
-                async with await anyio.open_file(self.path) as fhandle:
-                    lps = 0
-                    t0 = time.monotonic()
-
-                    line = ""
-                    async for line_ in fhandle:
-                        if line := line_.strip():
-                            lps += 1
-                            t1 = time.monotonic()
-
-                            if (t1 - t0) >= 1:
-                                lps = 0
-                                t0 = t1
-
-                            if not skip and lps <= self.max_lps:
-                                await self.format_label_idle_json_async(line)
-                    if skip:
-                        skip = False
-                        if line:
-                            await self.format_label_idle_json_async(line)
-
-            except Exception as ex:
+                line = await anyio.to_thread.run_sync(read_last_line, self.path)
+            except OSError as ex:
+                # the file may be (re)created later
                 logging.debug("cannot read from '%s': %s", self.path, ex)
 
                 failed_cnt += 1
@@ -59,3 +61,6 @@ class WidgetFile(JSONInputWidgetBase):
                     raise
             else:
                 failed_cnt = 0
+
+                if line is not None:
+                    self.set_content_from_line_i(line)

@@ -67,6 +67,7 @@ class BacklightInterface:
     def __init__(self, disp: str | int | None = None):
         self.disp = disp
         self.unpack = struct.Struct(self.EDID_FORMAT).unpack
+        self.device: BacklightDevice | None = None
         self.fd = -1
         self.rd_handle = None
         self.wr_handle = None
@@ -136,7 +137,7 @@ class BacklightInterface:
                     await anyio.sleep(cls.API_PAUSE)
                 except OSError as ex:
                     if ex.errno == errno.EACCES:
-                        logging.warning(
+                        logging.debug(
                             "%s: cannot force status detection", path_card.name
                         )
                     else:
@@ -171,10 +172,10 @@ class BacklightInterface:
             for desc_blk in blocks:
                 if desc_blk.startswith(self.EDID_NAME_DESC):
                     name_bytes = desc_blk[len(self.EDID_NAME_DESC) :]
-                    name = name_bytes.decode().strip()
+                    name = name_bytes.decode("ascii", "replace").strip()
                 elif desc_blk.startswith(self.EDID_SN_DESC):
                     sn_bytes = desc_blk[len(self.EDID_NAME_DESC) :]
-                    serial = sn_bytes.decode().strip()
+                    serial = sn_bytes.decode("ascii", "replace").strip()
 
                 if name is not None and serial is not None:
                     break
@@ -198,7 +199,21 @@ class BacklightInterface:
         return level
 
     async def close(self):
-        raise NotImplementedError()
+        self.device = None
+
+        # the handles do not own the file descriptor
+        if self.rd_handle is not None:
+            await self.rd_handle.aclose()
+            self.rd_handle = None
+
+        if self.wr_handle is not None:
+            await self.wr_handle.aclose()
+            self.wr_handle = None
+
+        if self.fd >= 0:
+            os.close(self.fd)
+        self.fd = -1
+        await anyio.lowlevel.checkpoint()
 
     async def __aenter__(self) -> BacklightInterface:
         await self.init()
@@ -347,25 +362,10 @@ class BacklightACPI(BacklightInterface):
             self.fd = os.open(self.device.path / "brightness", os.O_RDWR)
         # TODO: Get level from actual_brightness
 
-    async def close(self):
-        self.device = None
-
-        if self.rd_handle is not None:
-            await self.rd_handle.close()
-
-        if self.wr_handle is not None:
-            await self.wr_handle.close()
-
-        if self.fd >= 0:
-            os.fsync(self.fd)
-            os.close(self.fd)
-        self.fd = -1
-        await anyio.lowlevel.checkpoint()
-
     async def get_level(self) -> float:
         level = 0.0
 
-        if buff := os.pread(self.fd, 8, 0):
+        if buff := os.pread(self.fd, 16, 0):
             val = buff.decode("ascii").strip()
             level = int(val) / self.device.mul
 
@@ -375,7 +375,6 @@ class BacklightACPI(BacklightInterface):
         if self.device is not None:
             val = int(max(0, min(value * self.device.mul, self.device.mul * 100)))
             os.pwrite(self.fd, str(val).encode(), 0)
-            os.fsync(self.fd)
 
 
 class BacklightDDCCI(BacklightInterface):
@@ -423,7 +422,7 @@ class BacklightDDCCI(BacklightInterface):
             try:
                 self._open_sync(i2c_dev, self.I2C_ADDR_EDID)
                 name, serial = await self.get_edid()  # This takes forever
-            except OSError:
+            except (OSError, ValueError):
                 pass
             finally:
                 await self.close()
@@ -433,7 +432,7 @@ class BacklightDDCCI(BacklightInterface):
                     self._open_sync(i2c_dev, self.I2C_ADDR_TX)
                     max_level = (await self.read(self.I2C_IDX_BL))[0]
                     mul = max_level / 100
-                except OSError:
+                except (OSError, ValueError, IndexError):
                     pass
                 finally:
                     await self.close()
@@ -441,7 +440,7 @@ class BacklightDDCCI(BacklightInterface):
                 if (match := i2c_re.fullmatch(i2c_dev.name)) is not None:
                     i2c_num = int(match.group(1))
 
-                if i2c_num >= 0:
+                if i2c_num >= 0 and mul > 0:
                     card_name = self.i2c_to_drm(i2c_num)
 
                     is_connected = False
@@ -503,21 +502,6 @@ class BacklightDDCCI(BacklightInterface):
 
         return self.fd
 
-    async def close(self):
-        self.device = None
-
-        if self.rd_handle is not None:
-            await self.rd_handle.close()
-
-        if self.wr_handle is not None:
-            await self.wr_handle.close()
-
-        if self.fd >= 0:
-            os.fsync(self.fd)
-            os.close(self.fd)
-        self.fd = -1
-        await anyio.lowlevel.checkpoint()
-
     async def _read(self, n: int) -> bytes:
 
         buff = await self.fd_read_async(n + 3)
@@ -569,9 +553,12 @@ class BacklightDDCCI(BacklightInterface):
         buff = await self.fd_read_async(self.BUFFSZ_EDID)
         return self.get_dev_id(buff)
 
-    async def get_level(self) -> int:
-        return (await self.read(self.I2C_IDX_BL))[1]
+    async def get_level(self) -> float:
+        if self.device is None:
+            return 0.0
+        return (await self.read(self.I2C_IDX_BL))[1] / self.device.mul
 
     async def set_level(self, value: int | float):
         if self.device is not None:
-            await self.write(self.I2C_IDX_BL, int(value * self.device.mul))
+            raw = int(max(0, min(value * self.device.mul, self.device.max_level)))
+            await self.write(self.I2C_IDX_BL, raw)

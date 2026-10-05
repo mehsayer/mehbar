@@ -1,263 +1,261 @@
 import logging
-from functools import partial
-from itertools import compress
-from typing import Any
+import re
+from dataclasses import dataclass
 
 import anyio
-from gi.repository import GLib, Gtk
-from i3ipc import Event, WorkspaceEvent
-from i3ipc.aio import Connection
+from gi.repository import Gtk  # type: ignore
 
+from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.widget import RewriteMixin, WidgetBase
+from mehbar.widget import BarWidget, IdleUpdater, RewriteMixin, WidgetBase
+
+
+@dataclass(frozen=True)
+class WorkspaceState:
+    name: str
+    num: int
+    label: str
+    exists: bool = True
+    focused: bool = False
+    visible: bool = False
+    urgent: bool = False
+    previous: bool = False
+
+    @property
+    def ramp_level(self) -> int:
+        """Ramp entries are for: empty, normal, focused, urgent."""
+        if self.urgent:
+            return 3
+        if self.focused:
+            return 2
+        return 1 if self.exists else 0
+
+    @property
+    def css_classes(self) -> dict[str, bool]:
+        return {
+            "focused": self.focused,
+            "visible": self.visible,
+            "urgent": self.urgent,
+            "previous": self.previous,
+            "empty": not self.exists,
+        }
 
 
 class I3WorkspaceButton(WidgetBase):
-    def __init__(
-        self,
-        name: str,
-        ws_name: str,
-        res_mgr: ResourceManager,
-        loop_token: anyio.lowlevel.EventLoopToken | None = None,
-    ):
-        super().__init__(name, res_mgr)
+    def __init__(self, ws_name: str, parent: "WidgetI3Workspaces"):
+        super().__init__(
+            ws_name,
+            parent.res_mgr,
+            {"label": parent.button_label, "ramp": parent.button_ramp},
+        )
 
+        self.ws_name = ws_name
         self.add_css_class("i3-workspace")
-        self.onclick_call(1, partial(self.elt_run, self._switch_ws_async, ws_name))
+        self.onclick_call(1, self.run_soon, parent.switch_to, ws_name)
 
-        # self.ws_name = ws_name
-        self.loop_token = loop_token
+    def ramp_index(self, ramp_level: int) -> int | None:
+        if ramp_level < 0 or not self.ramp:
+            return None
+        return min(ramp_level, len(self.ramp) - 1)
 
-    async def _switch_ws_async(self, name: str):
-        i3_conn = await self.res_mgr.get_i3_connection_async()
-        return await i3_conn.command("workspace " + name)
+    def update(self, state: WorkspaceState):
+        """Must be called from GTK main thread."""
+        self.apply_content(
+            self.get_content(state.ramp_level, name=state.label, num=state.num)
+        )
 
-    # def switch_ws(self):
-    #     self.elt_run(self._switch_ws_async, self.ws_name)
+        for css_class, enabled in state.css_classes.items():
+            if enabled:
+                self.add_css_class(css_class)
+            else:
+                self.remove_css_class(css_class)
 
 
-class WidgetI3Workspaces(RewriteMixin, Gtk.ScrolledWindow):
+class WidgetI3Workspaces(RewriteMixin, BarWidget):
+    """Shows workspace buttons. Button labels are formatted using `label`
+    with `name` (rewritten) and `num` fields, ramp entries are for workspace
+    states: empty, normal, focused, urgent. Workspaces listed in
+    `always_show` are shown even if they do not exist."""
+
     MAX_WORKSPACE_CNT = 20
     MAX_SCROLL_SPEED = 100
+    DEFAULT_MAX_WORKSPACES = 10
+    DEFAULT_SCROLL_SPEED = 10
 
     TYPE = "i3_workspaces"
 
+    RE_NUM = re.compile(r"^(\d+)")
+
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
-        # def __init__(
-        #     self,
-        #     i3_conn: Connection,
-        #     scroll_width: int = 0,
-        #     scroll_speed: int = 10,
-        #     max_workspaces: int = 10,
-        #     always_show: list[str] | None = None,
-        #     rewrite: dict[str, str] = None,
-        # ):
-        #     super().__init__(i3_conn=i3_conn, rewrite=rewrite)
-        #
-        #
 
-        self.wsid_map: dict[str, int] = {}
-        self.ws_button_map: dict[str, I3WorkspaceButton] = {}
+        always_show = self.cfg.get("always_show") or []
 
-        self.always_show = []
-        if (always_show := self.cfg.get()) is not None:
-            self.always_show.extend([str(name) for name in always_show])
+        if not isinstance(always_show, list):
+            raise BarConfigError("'always_show' must be a list of workspace names")
 
+        self.always_show = [str(ws_name) for ws_name in always_show]
+
+        max_workspaces = self.cfg.get("max_workspaces", self.DEFAULT_MAX_WORKSPACES)
         self.max_workspaces = max(1, min(max_workspaces, self.MAX_WORKSPACE_CNT))
 
-        self.set_propagate_natural_height(True)
-        self.set_has_frame(False)
-        self.set_kinetic_scrolling(False)
+        self.button_label = self.cfg.get("label", "{name}")
+        self.button_ramp = self.cfg.get("ramp") or []
+
+        scroll_width = self.cfg.get("scroll_width", 0)
+        scroll_speed = self.cfg.get("scroll_speed", self.DEFAULT_SCROLL_SPEED)
 
         self.box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-
-        self.cache: dict[str, Any] = {}
+        self.scroller = Gtk.ScrolledWindow.new()
+        self.scroller.set_propagate_natural_height(True)
+        self.scroller.set_has_frame(False)
+        self.scroller.set_kinetic_scrolling(False)
         self.viewport = None
-        self.cur_focus = None
-        self.prev_focus = None
-        self.i3_conn = None
 
         if scroll_width > 0:
             scroll_speed = max(1, min(scroll_speed, self.MAX_SCROLL_SPEED))
-            self.set_min_content_width(scroll_width)
-            self.set_size_request(scroll_width, -1)
-            self.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+            self.scroller.set_min_content_width(scroll_width)
+            self.scroller.set_size_request(scroll_width, -1)
+            self.scroller.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
             self.viewport = Gtk.Viewport.new()
             self.viewport.set_child(self.box)
+            self.viewport.set_scroll_to_focus(False)
 
-            self.h_adj = self.get_hadjustment()
+            h_adj = self.scroller.get_hadjustment()
 
-            def _scroll(ctrl, _, direction):
-                self.h_adj.set_value(
-                    self.h_adj.get_value() + (direction * scroll_speed)
-                )
+            def _scroll(_ctrl, _dx, dy):
+                h_adj.set_value(h_adj.get_value() + (dy * scroll_speed))
+                return True
 
             scroll_ctrl = Gtk.EventControllerScroll.new(
                 Gtk.EventControllerScrollFlags.VERTICAL
             )
             scroll_ctrl.connect("scroll", _scroll)
             self.viewport.add_controller(scroll_ctrl)
-            self.viewport.set_scroll_to_focus(False)
-            self.set_child(self.viewport)
+            self.scroller.set_child(self.viewport)
         else:
-            self.set_propagate_natural_width(True)
-            self.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-            self.set_child(self.box)
+            self.scroller.set_propagate_natural_width(True)
+            self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+            self.scroller.set_child(self.box)
 
-    def scroll_into_view(self, widget: Gtk.WidgetBase):
-        if self.viewport is not None:
-            self.viewport.scroll_to(widget)
+        self.append(self.scroller)
 
-    def rewrite(self, text: str) -> str:
-        if text not in self.cache:
-            self.cache[text] = super().rewrite(text)
-        return self.cache[text]
+        # GTK main thread only
+        self._buttons: dict[str, I3WorkspaceButton] = {}
+        self._updater = IdleUpdater(self._apply_states)
 
-    def set_empty_idle(self, child: Gtk.WidgetBase) -> None:
-        child.set_visible(False)
-        child.remove_css_class("focused")
-        child.remove_css_class("previous")
-        child.remove_css_class("urgent")
-        return GLib.SOURCE_REMOVE
+        # event loop thread only
+        self._i3_conn = None
+        self._prev_focus: str | None = None
+        self._refresh_seq = 0
+        self._too_many_logged = False
 
-    def set_focused_idle(self, child: Gtk.WidgetBase) -> None:
-        child.add_css_class("focused")
-        child.set_visible(True)
-        self.scroll_into_view(child)
-        return GLib.SOURCE_REMOVE
+    def _num_for_name(self, ws_name: str) -> int:
+        match = self.RE_NUM.match(ws_name)
+        return int(match.group(1)) if match else -1
 
-    def set_urgent_idle(self, child: Gtk.WidgetBase) -> None:
-        if child.has_css_class("urgent"):
-            child.remove_css_class("urgent")
-        else:
-            child.add_css_class("urgent")
-            child.set_visible(True)
-            self.scroll_into_view(child)
-        return GLib.SOURCE_REMOVE
+    # Event loop thread
 
-    def add_css_class_idle(self, child: Gtk.WidgetBase, css_class: str) -> None:
-        child.add_css_class(css_class)
-        return GLib.SOURCE_REMOVE
+    async def switch_to(self, ws_name: str):
+        i3_conn = await self.res_mgr.get_i3_connection_async()
+        escaped = ws_name.replace("\\", "\\\\").replace('"', '\\"')
+        await i3_conn.command(f'workspace "{escaped}"')
 
-    def remove_css_class_idle(self, child: Gtk.WidgetBase, css_class: str) -> None:
-        child.remove_css_class(css_class)
-        return GLib.SOURCE_REMOVE
+    async def _refresh(self):
+        self._refresh_seq += 1
+        seq = self._refresh_seq
 
-    def set_name_idle(self, child: Gtk.WidgetBase, name: str) -> None:
-        child.set_name(name)
-        return GLib.SOURCE_REMOVE
+        workspaces = await self._i3_conn.get_workspaces()
 
-    def set_child_label_idle(self, child: Gtk.WidgetBase, label: str) -> None:
-        child.set_label(label)
-        return GLib.SOURCE_REMOVE
+        # a later refresh has finished first
+        if seq != self._refresh_seq:
+            return
 
-    def dispatch_ws(
-        self, name: str, old_focus_name: str | None, action: str, wsid: int
-    ) -> None:
+        states = {}
 
-        child = None
-        old_name = None
-        label = self.rewrite(name)
-
-        if self.wsid_map.get(name, -1) < 0 and wsid >= 0 and action == "rename":
-            for _name, _wsid in self.wsid_map.items():
-                if _wsid == wsid:
-                    old_name = _name
-                    break
-
-            if old_name in self.wsid_map:
-                self.wsid_map[name] = self.wsid_map.pop(old_name)
-            else:
-                self.wsid_map[name] = wsid
-
-        if old_name in self.ws_button_map:
-            child = self.ws_button_map[old_name]
-            GLib.idle_add(self.set_name_idle, child, name)
-            GLib.idle_add(self.set_child_label_idle, child, label)
-        elif name in self.ws_button_map:
-            child = self.ws_button_map[name]
-
-            match action:
-                case "empty":
-                    if name not in self.always_show:
-                        GLib.idle_add(self.set_empty_idle, child)
-                    else:
-                        GLib.idle_add(self.remove_css_class_idle, child, "focused")
-                    GLib.idle_add(self.remove_css_class_idle, child, "urgent")
-                case "focus":
-                    if self.cur_focus in self.ws_button_map:
-                        GLib.idle_add(
-                            self.remove_css_class_idle,
-                            self.ws_button_map[self.cur_focus],
-                            "focused",
-                        )
-                        GLib.idle_add(
-                            self.add_css_class_idle,
-                            self.ws_button_map[old_focus_name],
-                            "previous",
-                        )
-
-                    if self.prev_focus in self.ws_button_map:
-                        GLib.idle_add(
-                            self.remove_css_class_idle,
-                            self.ws_button_map[self.prev_focus],
-                            "previous",
-                        )
-
-                    GLib.idle_add(self.set_focused_idle, child)
-
-                    self.prev_focus, self.cur_focus = self.cur_focus, name
-                case "urgent":
-                    GLib.idle_add(self.set_urgent_idle, child)
-                case _:
-                    pass
-        elif len(self.ws_button_map) < self.max_workspaces:
-            child = I3WorkspaceButton(name, label, self.i3_conn, self.loop_token)
-            GLib.idle_add(self.box.append, child)
-            self.ws_button_map[name] = child
-            if wsid >= 0:
-                self.wsid_map[name] = wsid
-        else:
-            logging.error(
-                "refusing to track more than %d workspaces", self.max_workspaces
+        for ws in workspaces:
+            states[ws.name] = WorkspaceState(
+                ws.name,
+                ws.num,
+                self.rewrite(ws.name),
+                focused=ws.focused,
+                visible=ws.visible and not ws.focused,
+                urgent=ws.urgent,
+                previous=ws.name == self._prev_focus and not ws.focused,
             )
 
-        return GLib.SOURCE_REMOVE
-
-    async def run_wrapper(self):
-        self.loop_token = anyio.lowlevel.current_token()
-        await self.run()
-
-    async def run(self):
-        self.i3_conn = await self.get_i3_conn()
-
-        def _callback_workspaces(_: Connection, event: WorkspaceEvent) -> None:
-            if event.change not in ["move", "restore", "reload"]:
-                prev_name = None
-                if event.old is not None:
-                    prev_name = event.old.name
-
-                self.dispatch_ws(
-                    event.current.name,
-                    prev_name,
-                    event.change,
-                    event.current.id,
+        for ws_name in self.always_show:
+            if ws_name not in states:
+                states[ws_name] = WorkspaceState(
+                    ws_name,
+                    self._num_for_name(ws_name),
+                    self.rewrite(ws_name),
+                    exists=False,
+                    previous=ws_name == self._prev_focus,
                 )
 
-        existing_ws = {}
-        for ws in await self.i3_conn.get_workspaces():
-            existing_ws[ws.name] = (ws.ipc_data["id"], ws.focused, ws.urgent)
+        # numbered workspaces first, like i3 does
+        ordered = sorted(
+            states.values(), key=lambda s: (s.num < 0, s.num, s.name)
+        )
 
-        for name in self.always_show:
-            wsid, *_ = existing_ws.get(name, (-1, False, False))
+        if len(ordered) > self.max_workspaces:
+            if not self._too_many_logged:
+                self._too_many_logged = True
+                logging.warning(
+                    "widget '%s': showing only %d workspaces",
+                    self.widget_name,
+                    self.max_workspaces,
+                )
+            ordered = ordered[: self.max_workspaces]
 
-            if name is not None:
-                self.dispatch_ws(name, None, "init", wsid)
+        self._updater.submit(tuple(ordered))
 
-        actions = ["init", "focus", "urgent"]
-        for name, (wsid, focus, urgent) in existing_ws.items():
-            for action in compress(actions, [True, focus, urgent]):
-                self.dispatch_ws(name, None, action, wsid)
+    async def run(self):
+        from i3ipc import Event, WorkspaceEvent
 
-        self.i3_conn.on(Event.WORKSPACE, _callback_workspaces)
+        self._i3_conn = await self.res_mgr.get_i3_connection_async()
+
+        async def _callback_workspace(_, event: WorkspaceEvent):
+            if event.change == "focus" and event.old is not None:
+                self._prev_focus = event.old.name
+            await self._refresh()
+
+        await self._refresh()
+
+        self._i3_conn.on(Event.WORKSPACE, _callback_workspace)
+
+        try:
+            await anyio.sleep_forever()
+        finally:
+            self._i3_conn.off(_callback_workspace)
+
+    # GTK main thread
+
+    def _apply_states(self, states: tuple[WorkspaceState, ...]):
+        wanted = {state.name for state in states}
+
+        for ws_name in list(self._buttons):
+            if ws_name not in wanted:
+                self.box.remove(self._buttons.pop(ws_name))
+
+        prev_button = None
+        focused_button = None
+
+        for state in states:
+            if (button := self._buttons.get(state.name)) is None:
+                button = I3WorkspaceButton(state.name, self)
+                self._buttons[state.name] = button
+                self.box.insert_child_after(button, prev_button)
+            elif button.get_prev_sibling() is not prev_button:
+                self.box.reorder_child_after(button, prev_button)
+
+            button.update(state)
+
+            if state.focused:
+                focused_button = button
+
+            prev_button = button
+
+        if self.viewport is not None and focused_button is not None:
+            self.viewport.scroll_to(focused_button, None)

@@ -1,34 +1,74 @@
-import logging
+import anyio
+from anyio.abc import ObjectSendStream
 
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
-from ._bluetooth import BluetoothEvent, BluetoothStatus, BluezBackend
+from ._bluetooth import BluetoothInfo, BluezBackend
 
 
 class WidgetBluetoothStatus(WidgetBase):
+    """Shows Bluetooth status, updated on BlueZ D-Bus signals. Ramp entries
+    are for the status: off, on, connected. If the interval is set, the
+    status is polled as well."""
+
     TYPE = "bluetooth-status"
+
+    # coalesce bursts of signals, e.g. when a device connects
+    DEBOUNCE = 0.2
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
 
-        self._last_info = None
-        self.max_ramp_level = self.cfg.get("max_ramp_level", self.DFL_RAMP_IDX)
-        self.dbus_iface = BluezBackend(BluetoothEvent.POWER, self._cb)
+        self.backend = BluezBackend()
 
-    def _cb(self, *args, **kwargs):
-        logging.debug("TOP CALLBACK ARGS=%s; KWARGS=%s", args, kwargs)
+    def ramp_index(self, ramp_level: int) -> int | None:
+        if ramp_level < 0 or not self.ramp:
+            return None
+        return min(ramp_level, len(self.ramp) - 1)
+
+    def _show(self, info: BluetoothInfo):
+        self.set_new_content_i(
+            int(info.status),
+            status=info.status.name.lower(),
+            name=info.name,
+            alias=info.alias,
+            battery=info.bat_percent if info.bat_percent >= 0 else None,
+            volume=info.volume if info.volume >= 0 else None,
+        )
+
+    async def _poll(self, sstream: ObjectSendStream):
+        # the first iteration does not sleep, the status is queried anyway
+        await self.sleep_interval()
+
+        while await self.sleep_interval():
+            try:
+                sstream.send_nowait(None)
+            except anyio.WouldBlock:
+                pass
 
     async def run(self):
+        sstream, rstream = anyio.create_memory_object_stream[None](1)
 
-        await self.dbus_iface.start()
+        def _notify():
+            try:
+                sstream.send_nowait(None)
+            except (anyio.WouldBlock, anyio.ClosedResourceError):
+                pass
 
-        # while await self.sleep_interval():
-        #     if (info := await self.dbus_iface.get_info()) != self._last_info:
-        #         self._last_state = info
+        # connect to the bus in a worker thread, it blocks
+        await anyio.to_thread.run_sync(lambda: self.backend.bus)
 
-        #         ramp_level = int(
-        #             (info.status + 1) * (self.max_ramp_level / len(BluetoothStatus))
-        #         )
+        sub_ids = self.backend.subscribe(lambda: self.call_soon(_notify))
 
-        #         self.set_new_content_i(ramp_level=ramp_level)
+        try:
+            async with sstream, rstream, anyio.create_task_group() as grp:
+                grp.start_soon(self._poll, sstream)
+
+                self._show(await anyio.to_thread.run_sync(self.backend.get_info))
+
+                async for _ in rstream:
+                    await anyio.sleep(self.DEBOUNCE)
+                    self._show(await anyio.to_thread.run_sync(self.backend.get_info))
+        finally:
+            self.backend.unsubscribe(sub_ids)

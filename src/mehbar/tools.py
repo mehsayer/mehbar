@@ -1,110 +1,15 @@
 import argparse
-import hashlib
 import logging
 import os
 import string
-from functools import partial
-from importlib import resources
+import sys
+from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path
-
-#!/usr/bin/env python3
-from typing import Any, Mapping, Sequence, TypeVar
-
-import gi
-
-NULL = object()
-
-KT = TypeVar("KT")
-VT = TypeVar("VT")
+from typing import Any
 
 
-class Singleton(type):
-    _inst = {}
-
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._inst:
-            cls._inst[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._inst[cls]
-
-
-class SelectorDict(dict[KT, VT]):
-    def select(self, path: str, default: VT | None = NULL):
-        result: VT | dict[KT, VT] | None = self
-
-        is_error = False
-
-        parts = path.split(".")
-        while parts:
-            if (part := parts.pop(0)) in result:
-                result = result[part]  # type: ignore
-                if not isinstance(result, dict):
-                    if parts:
-                        is_error = True
-                    break
-            else:
-                is_error = True
-                break
-        if is_error:
-            if default is not NULL:
-                result = default
-            else:
-                raise KeyError(f"no element at path '{path}'")
-
-        return result
-
-
-class Colorize:
-    RESET = "\x1b[0m"
-    BLACK = "\x1b[30m"
-    BLUE = "\x1b[34m"
-    CYAN = "\x1b[36m"
-    GREEN = "\x1b[32m"
-    GREY = "\x1b[90m"
-    MAGENTA = "\x1b[35m"
-    RED = "\x1b[31m"
-    WHITE = "\x1b[37m"  # more like LIGHT GRAY
-    YELLOW = "\x1b[33m"
-
-    BOLD = "\x1b[1m"
-    BOLD_BLACK = "\x1b[1;30m"  # DARK GRAY
-    BOLD_BLUE = "\x1b[1;34m"
-    BOLD_CYAN = "\x1b[1;36m"
-    BOLD_GREEN = "\x1b[1;32m"
-    BOLD_MAGENTA = "\x1b[1;35m"
-    BOLD_RED = "\x1b[1;31m"
-    BOLD_WHITE = "\x1b[1;37m"  # actual WHITE
-    BOLD_YELLOW = "\x1b[1;33m"
-
-    # intense = like bold but without being bold
-    INTENSE_BLACK = "\x1b[90m"
-    INTENSE_BLUE = "\x1b[94m"
-    INTENSE_CYAN = "\x1b[96m"
-    INTENSE_GREEN = "\x1b[92m"
-    INTENSE_MAGENTA = "\x1b[95m"
-    INTENSE_RED = "\x1b[91m"
-    INTENSE_WHITE = "\x1b[97m"
-    INTENSE_YELLOW = "\x1b[93m"
-
-    BACKGROUND_BLACK = "\x1b[40m"
-    BACKGROUND_BLUE = "\x1b[44m"
-    BACKGROUND_CYAN = "\x1b[46m"
-    BACKGROUND_GREEN = "\x1b[42m"
-    BACKGROUND_MAGENTA = "\x1b[45m"
-    BACKGROUND_RED = "\x1b[41m"
-    BACKGROUND_WHITE = "\x1b[47m"
-    BACKGROUND_YELLOW = "\x1b[43m"
-
-    INTENSE_BACKGROUND_BLACK = "\x1b[100m"
-    INTENSE_BACKGROUND_BLUE = "\x1b[104m"
-    INTENSE_BACKGROUND_CYAN = "\x1b[106m"
-    INTENSE_BACKGROUND_GREEN = "\x1b[102m"
-    INTENSE_BACKGROUND_MAGENTA = "\x1b[105m"
-    INTENSE_BACKGROUND_RED = "\x1b[101m"
-    INTENSE_BACKGROUND_WHITE = "\x1b[107m"
-    INTENSE_BACKGROUND_YELLOW = "\x1b[103m"
-
-
-def next_prime(num: int, offset: int = 0):
+def next_prime(num: int, offset: int = 0) -> int:
     num += offset
 
     while not is_prime(num):
@@ -112,40 +17,30 @@ def next_prime(num: int, offset: int = 0):
     return num
 
 
-def is_prime(num: int):
+def is_prime(num: int) -> bool:
     if num <= 1:
-        ret = False
-    else:
-        ret = True
-        for i in range(2, int(num**0.5) + 1):
-            if num % i == 0:
-                ret = False
-                break
-    return ret
+        return False
+
+    for i in range(2, int(num**0.5) + 1):
+        if num % i == 0:
+            return False
+    return True
 
 
 def overlay_dict_r(
-    bottom: dict[Any, Any], top: dict[Any, Any], max_depth: int = 10, depth: int = 0
+    bottom: dict[Any, Any], top: Mapping[Any, Any], max_depth: int = 10, depth: int = 0
 ):
+    """Recursively merges `top` into `bottom` in place, values from `top` win."""
     if depth > max_depth:
         raise ValueError(f"maximum nesting depth exceeded: {max_depth}")
 
     for ktop, vtop in top.items():
-        if isinstance(vtop, dict):
-            if ktop not in bottom or not isinstance(bottom[ktop], dict):
+        if isinstance(vtop, Mapping):
+            if not isinstance(bottom.get(ktop), dict):
                 bottom[ktop] = {}
             overlay_dict_r(bottom[ktop], vtop, max_depth, depth + 1)
         else:
             bottom[ktop] = vtop
-
-
-def md5sum_sync(fpath: str | Path) -> str:
-    hash = hashlib.md5()
-    with open(fpath, "rb") as fhandle:
-        reader = partial(fhandle.read, 128 * hash.block_size)
-        for chunk in iter(reader, b""):
-            hash.update(chunk)
-    return hash.hexdigest()
 
 
 class ArgumentsHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -229,95 +124,87 @@ class FormattableTimeDelta:
     def __int__(self) -> int:
         return self.tot_secs
 
+    def __eq__(self, other) -> bool:
+        if isinstance(other, FormattableTimeDelta):
+            return self.tot_secs == other.tot_secs
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.tot_secs)
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(seconds={self.tot_secs})"
 
 
 def get_config_home() -> Path:
-    if (cfg_home := os.getenv("XDG_CONFIG_HOME")) is None:
-        cfg_home = Path.home() / ".config"
-    else:
-        cfg_home = Path(cfg_home)
-    return cfg_home / "mehbar"
+    if cfg_home := os.getenv("XDG_CONFIG_HOME"):
+        return Path(cfg_home) / "mehbar"
+    return Path.home() / ".config" / "mehbar"
 
 
-def get_asset(asset: str | Path) -> Path | None:
-    asset_file = None
-    with resources.as_file(resources.files()) as mod_dir:
-        asset_file_ = mod_dir / "assets" / asset
-
-        if asset_file_.is_file():
-            asset_file = asset_file_
-    return asset_file
-
-
-def get_system_cs() -> str:
-    ret = "system"
-
-    try:
-        from gi.repository import Gio  # type: ignore
-
-        gsettings_schema = "org.gnome.desktop.interface"
-
-        if Gio.SettingsSchemaSource.get_default().lookup(gsettings_schema) is not None:
-            gsettings = Gio.Settings.new(gsettings_schema)
-
-            gsettings_cs = gsettings.get_string("color-scheme")
-            if gsettings_cs == "prefer-dark":
-                ret = "dark"
-            elif gsettings_cs == "prefer-light":
-                ret = "light"
-    except ImportError:
-        pass
-
-    if ret is None:
-        try:
-            gi.require_version("Adw", "1")
-            from gi.repository import Adw  # type: ignore
-
-            style_mgr = Adw.StyleManager.get_default()
-            ret = "dark" if style_mgr.get_dark() else "light"
-        except (ImportError, ValueError):
-            pass
-
-    return ret
+@lru_cache(maxsize=256)
+def _parse_format(format_string: str) -> tuple[tuple[str, str | None, str, str], ...]:
+    return tuple(string.Formatter().parse(format_string))
 
 
 class OptionalFormatter(string.Formatter):
-    """Like the default stripng formatter that you know and love but silently
-    skips missing fields.
+    """Like the default string formatter that you know and love, but silently
+    renders missing and `None` fields as empty strings. Values that do not
+    accept the format specification are rendered with `str()`.
     """
 
-    def get_fields(self, format_string) -> list[str]:
-        ret = []
-        for _, fld, _, _ in self.parse(format_string):
-            if fld is not None:
-                ret.append(fld)
+    _MISSING = object()
 
-        return ret
+    def get_fields(self, format_string: str | None) -> list[str]:
+        if not format_string:
+            return []
+        return [fld for _, fld, _, _ in _parse_format(format_string) if fld]
+
+    def _lookup(self, field: str, kwargs: Mapping[str, Any]) -> Any:
+        # Plain keys first: sensor names like 'k10temp/Tctl' or ones containing
+        # dots are not valid attribute paths
+        if (value := kwargs.get(field, self._MISSING)) is not self._MISSING:
+            return value
+        try:
+            return self.get_field(field, (), kwargs)[0]
+        except (KeyError, AttributeError, IndexError, TypeError, ValueError):
+            return None
 
     def vformat(
         self,
-        format_string: str,
+        format_string: str | None,
         args: Sequence[Any],
         kwargs: Mapping[str, Any],
-    ) -> str:  # type: ignore
-
+    ) -> str:  # type: ignore[override]
         if args:
             raise ValueError("non-keyword arguments are not supported")
 
-        unparsed = str()
+        if not format_string:
+            return ""
 
-        for literal, fld, spec, _ in self.parse(format_string):
-            if fld is None or kwargs.get(fld) is None:
-                unparsed += literal
-            elif fld in kwargs and str(kwargs[fld]):
-                unparsed += literal + "{" + fld
-                if spec is not None:
-                    unparsed += ":" + spec
-                unparsed += "}"
+        out = []
 
-        return super().vformat(unparsed, args, kwargs)
+        for literal, field, spec, conv in _parse_format(format_string):
+            out.append(literal)
+
+            if field is None:
+                continue
+
+            if (value := self._lookup(field, kwargs)) is None:
+                continue
+
+            if conv:
+                value = self.convert_field(value, conv)
+
+            if spec and "{" in spec:
+                spec = self.vformat(spec, args, kwargs)
+
+            try:
+                out.append(self.format_field(value, spec))
+            except (ValueError, TypeError):
+                out.append(str(value))
+
+        return "".join(out)
 
 
 class LevelAwareLoggingFormatter(logging.Formatter):
@@ -332,8 +219,10 @@ class LevelAwareLoggingFormatter(logging.Formatter):
     def __init__(
         self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None
     ):
+        super().__init__(
+            self.DEFAULT_FORMAT, datefmt, style, validate, defaults=defaults
+        )
         self._styles = {}
-        self.datefmt = datefmt
 
         for levelno in logging.getLevelNamesMapping().values():
             level_fmt = self.LEVEL_FORMATS.get(levelno, self.DEFAULT_FORMAT)
@@ -350,4 +239,14 @@ class LevelAwareLoggingFormatter(logging.Formatter):
         return super().formatException(ei) if ei != self.NO_EXC_INFO else ""
 
     def formatMessage(self, record: logging.LogRecord):
-        return self._styles[record.levelno].format(record)
+        return self._styles.get(record.levelno, self._style).format(record)
+
+
+class ExceptionInfoFilter(logging.Filter):
+    """Attaches the exception currently being handled, if any, to every
+    record that does not carry exception information already."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not record.exc_info and (exc := sys.exception()) is not None:
+            record.exc_info = (type(exc), exc, exc.__traceback__)
+        return True

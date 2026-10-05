@@ -1,18 +1,25 @@
+import asyncio
 from functools import partial
 
 import anyio
+from anyio.abc import ObjectReceiveStream, ObjectSendStream
 
 from mehbar.resource_manager import ResourceManager
-from mehbar.widget import WidgetBase, WidgetContent
+from mehbar.widget import WidgetBase
 
 
 class WidgetPulseVolume(WidgetBase):
+    """Shows the sink volume. Scroll changes the volume, right click toggles
+    mute. The first ramp entry is shown when muted, the rest is spread over
+    0..`max_volume` percent."""
+
     TYPE = "pulse_volume"
-    CMD_BASE = 128
     DEFAULT_VOLUME = 100
     MAX_VOLUME = 200
     MIN_VOLUME = 20
     DEFAULT_DELTA = 10
+    QUEUE_SIZE = 8
+    CONNECT_TIMEOUT = 5
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
@@ -25,90 +32,143 @@ class WidgetPulseVolume(WidgetBase):
 
         self.vol_delta = self.cfg.get("volume_delta", self.DEFAULT_DELTA) / 100
 
-        self.sstream, self.rstream = anyio.create_memory_object_stream[int](8)
+        self._sstream: ObjectSendStream[float | None] | None = None
 
-        volume_action = partial(self.elt_run_sync, self._sink_action)
+        self.onclick_call(3, self.call_soon, self._request, None)
+        self.onscroll_call(
+            partial(self.call_soon, self._request, self.vol_delta),
+            partial(self.call_soon, self._request, -self.vol_delta),
+        )
 
-        volume_down = partial(volume_action, self.CMD_BASE - self.vol_delta)
-        volume_up = partial(volume_action, self.CMD_BASE + self.vol_delta)
-        volume_mute = partial(volume_action, self.CMD_BASE)
+    def ramp_index(self, ramp_level: int) -> int | None:
+        if ramp_level < 0 or not self.ramp:
+            return None
 
-        self.onclick_call(3, volume_mute)
-        self.onscroll_call(volume_down, volume_up)
+        if ramp_level > self.max_volume or len(self.ramp) == 1:
+            return 0
 
-    def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
+        level = min(ramp_level, self.max_volume - 1)
+        return int(level / (self.max_volume / (len(self.ramp) - 1))) + 1
 
-        if ramp_level not in self.ramp_index_cache:
-            ramp = self.cfg.get("ramp")
-            content = None
+    def _request(self, delta: float | None):
+        """Requests a volume change by `delta`, `None` toggles mute."""
+        if self._sstream is not None:
+            try:
+                self._sstream.send_nowait(delta)
+            except (anyio.WouldBlock, anyio.ClosedResourceError):
+                pass
 
-            if ramp is not None and ramp:
-                if ramp_level >= 0 and ramp is not None and ramp:
-                    if ramp_level <= self.max_volume:
-                        level_ = min(ramp_level, self.max_volume - 1)
-                        idx = int(level_ / (self.max_volume / (len(ramp) - 1))) + 1
-                    else:
-                        idx = 0
-                    content = WidgetContent.parse(ramp[idx])
+    @staticmethod
+    async def _op(coro_func, *args):
+        """Runs a pulse operation. pulsectl-asyncio leaves a dangling C
+        callback behind if an operation is cancelled midway, which crashes
+        the process later, so operations are shielded from cancellation."""
+        with anyio.CancelScope(shield=True):
+            return await coro_func(*args)
 
-            self.ramp_index_cache[ramp_level] = content
+    async def _show_volume(self, pulse):
+        sink = await self._op(pulse.sink_info, self._sink_idx)
 
-        return self.ramp_index_cache[ramp_level]
+        volume = round(sink.volume.value_flat * 100)
 
-    def _sink_action(self, cmd: int):
+        if sink.mute:
+            ramp_level = self.max_volume + 1
+        else:
+            ramp_level = min(volume, self.max_volume)
 
-        try:
-            self.sstream.send_nowait(cmd)
-        except anyio.WouldBlock:
-            pass
+        self.set_new_content_i(ramp_level, percent=volume, muted=bool(sink.mute))
 
-    async def _listen(self, handle):
+    async def _resolve_sink(self, pulse):
+        self._sink_idx = (await self._op(pulse.get_sink_by_name, self.sink_name)).index
 
-        sink_idx = (await handle.get_sink_by_name(self.sink_name)).index
-
-        async def _update_volume_label(handle):
-
-            sink = await handle.sink_info(sink_idx)
-
-            volume = round(sink.volume.value_flat * 100)
-
-            if volume <= self.max_volume:
-                if sink.mute == 0:
-                    ramp_level = volume
+    async def _pump_events(self, pulse, wake: ObjectSendStream[None]):
+        """Runs as a plain asyncio task, out of reach of AnyIO cancellation:
+        cancelling `subscribe_events()` while connected crashes the process,
+        see `_op()`. Closes `wake` when the subscription ends."""
+        with wake:
+            async for event in pulse.subscribe_events("sink", "server"):
+                if event.facility == "server" or (
+                    event.index == self._sink_idx and event.t == "remove"
+                ):
+                    # the default sink may have changed
+                    self._resolve_needed = True
+                elif event.index == self._sink_idx and event.t == "change":
+                    self._update_needed = True
                 else:
-                    ramp_level = self.max_volume + 1
-                self.set_new_content_i(percent=volume, ramp_level=ramp_level)
-                await anyio.sleep(0.1)
+                    continue
 
-        self.set_new_content_i(percent=self.max_volume, ramp_level=self.max_volume)
+                try:
+                    wake.send_nowait(None)
+                except anyio.WouldBlock:
+                    pass
 
-        await _update_volume_label(handle)
+    async def _listen(self, pulse, wake: ObjectReceiveStream[None]):
+        await self._resolve_sink(pulse)
+        await self._show_volume(pulse)
 
-        async for event in handle.subscribe_events("sink"):
-            if event.index == sink_idx and event.t == "change":
-                await _update_volume_label(handle)
+        async with wake:
+            async for _ in wake:
+                if self._resolve_needed:
+                    self._resolve_needed = False
+                    await self._resolve_sink(pulse)
+                    self._update_needed = True
 
-    async def _consume(self, handle):
+                if self._update_needed:
+                    self._update_needed = False
+                    await self._show_volume(pulse)
 
-        sink = await handle.get_sink_by_name(self.sink_name)
+        raise ConnectionError("disconnected from the sound server")
 
-        async with self.rstream:
-            async for cmd in self.rstream:
-                if cmd == self.CMD_BASE:
-                    await handle.mute(sink, sink.mute == 0)
+    async def _consume(self, pulse, rstream: ObjectReceiveStream[float | None]):
+        async with rstream:
+            async for delta in rstream:
+                # sink state changes outside of the widget too
+                sink = await self._op(pulse.get_sink_by_name, self.sink_name)
+
+                if delta is None:
+                    await self._op(pulse.mute, sink, not sink.mute)
                 else:
-                    delta = cmd - self.CMD_BASE
-                    vol = round(max(0, sink.volume.value_flat + delta) * 100)
+                    current = sink.volume.value_flat
+                    target = max(0.0, min(current + delta, self.max_volume / 100))
 
-                    if vol >= 0 and vol <= self.max_volume:
-                        await handle.volume_change_all_chans(sink, delta)
-                        await anyio.sleep(0.1)
+                    if abs(target - current) >= 0.005:
+                        await self._op(
+                            pulse.volume_change_all_chans, sink, target - current
+                        )
 
     async def run(self):
-
         from pulsectl_asyncio import PulseAsync
 
-        async with PulseAsync("poll-volume") as pulse:
+        self._sink_idx = -1
+        self._resolve_needed = False
+        self._update_needed = False
+
+        self._sstream, rstream = anyio.create_memory_object_stream[float | None](
+            self.QUEUE_SIZE
+        )
+        wake_send, wake_recv = anyio.create_memory_object_stream[None](1)
+
+        pulse = PulseAsync("mehbar-volume")
+        pump = None
+
+        try:
+            with anyio.CancelScope(shield=True):
+                await pulse.connect(timeout=self.CONNECT_TIMEOUT)
+
+            pump = asyncio.ensure_future(self._pump_events(pulse, wake_send))
+
             async with anyio.create_task_group() as grp:
-                grp.start_soon(self._listen, pulse)
-                grp.start_soon(self._consume, pulse)
+                grp.start_soon(self._consume, pulse, rstream)
+                await self._listen(pulse, wake_recv)
+        finally:
+            self._sstream.close()
+            self._sstream = None
+
+            # close the connection before the subscription is cancelled, so
+            # that it does not try to unsubscribe
+            pulse.close()
+
+            if pump is not None:
+                pump.cancel()
+                # the outcome does not matter at this point
+                pump.add_done_callback(lambda t: t.cancelled() or t.exception())

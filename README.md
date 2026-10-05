@@ -1,26 +1,21 @@
 # mehbar
 Highly customizable GPU-accelerated Wayland status bar
 
-
-
 ## Enable brightness control for DDC/CI-compatible monitors
 1. add `dtparam=i2c_arm=on` to /boot/config.txt
 2. load ddcci, backlight, ddcci_backlight, i2c-dev modules
-3. echo "ddcci 0x37" > /sys/bus/i2c/devices/<device>/new_device, whre device is the one you see in the output of ddcutil detect
-
+3. echo "ddcci 0x37" > /sys/bus/i2c/devices/<device>/new_device, where device is the one you see in the output of ddcutil detect
 
 # udev rules
 /etc/udev/rules.d/backlight.rules:
 ACTION=="add", SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
 udevadm control --reload-rules
 udevadm trigger
- 
 
+## Building the base theme
+The base theme sources live in `examples/_base`, compile them into the package with:
 
-dasdasada
+    ./compile-gresources.sh /org/mehbar/themes/_base examples/_base src/mehbar/assets/_base.gresource
 
-
-
-sffafsafa
-
-
+## Icons
+The base theme uses [Phosphor Icons](https://phosphoricons.com), MIT license, see `examples/_base/icons/LICENSE`.

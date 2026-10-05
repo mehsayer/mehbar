@@ -2,497 +2,448 @@
 import logging
 from typing import Any
 
-import anyio
 import gi
-
-from mehbar.widget import WidgetBase
 
 gi.require_version("Playerctl", "2.0")
 
-from gi.repository import GLib, Gtk, Playerctl
+from gi.repository import GLib, Gtk, Playerctl  # type: ignore
 
 from mehbar.exceptions import BarConfigError
-from mehbar.tools import OptionalFormatter
+from mehbar.resource_manager import ResourceManager
+from mehbar.widget import BarWidget, WidgetBase, WidgetContent
+
+
+def format_time(seconds: int) -> str:
+    t_min, t_sec = divmod(max(seconds, 0), 60)
+    return f"{t_min}:{t_sec:02d}"
 
 
 class PlayerctlButton(WidgetBase):
-    def __init__(self, name: str, label: str, label_format: str | None = None):
-        super().__init__(0, label_format)
-
-        self.initial_label = label
-        self.set_name(name)
-        self.set_label(label)
-        self.add_css_class("playerctl-button")
-
-    def reset_label_idle(self):
-        self.set_label_idle(self.initial_label)
-
-    def update(self):
-        raise NotImplementedError()
-
-
-class WidgetPlayerCtl(Gtk.Box):
-    MAX_SCROLL_SPEED = 100
-    MIN_SCROLL_SPEED = 1
-
-    TYPE = "playerctl"
-
-    MODULES = (
-        [
-            {"type": "previous", "label": "prev"},
-            {"type": "seek_back", "label": "rw"},
-            {
-                "type": "shuffle",
-                "label_on": "shuffle",
-                "label_off": "no shuffle",
-            },
-            {
-                "type": "play_pause",
-                "label_play": "play",
-                "label_pause": "pause",
-            },
-            {"type": "seek_forward", "label": "ff"},
-            {"type": "next", "label": "next"},
-            {
-                "type": "title",
-                "label_empty": "-----",
-                "ticker": True,
-                "scroll_speed": 10,
-                "scroll_width": 128,
-                "label_format": "{artist} - {album} - {title}",
-            },
-            {
-                "type": "time",
-                "label_empty": "--:--",
-                "label_format": "{current}/{total}",
-            },
-        ],
-    )
+    """Must be used from GTK main thread only. `alt_texts` are other texts
+    the button may show, e.g. the pause label of the play button."""
 
     def __init__(
         self,
-        player_names: list[str],
-        modules: list[dict[str, Any]] | None,
-        always_show: bool = True,
-        tick_ms: int = 500,
-        **kwargs,
+        name: str,
+        res_mgr: ResourceManager,
+        label_format: str | None = None,
+        empty_text: str | None = None,
+        alt_texts: tuple[str, ...] = (),
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            name,
+            res_mgr,
+            {"label": label_format or ""},
+            layout_specs=(empty_text or "", *alt_texts),
+        )
 
-        self.log = logging.getLogger(self.__class__.__name__)
+        self.empty_text = empty_text or ""
+        self.add_css_class("playerctl-button")
+        self.reset()
 
-        if player_names is None:
-            raise BarConfigError("no player names speficied")
+    def show_text(self, text: str):
+        self.apply_content(WidgetContent.parse(text))
 
-        self.player_names = player_names
+    def show_fields(self, **fields: Any):
+        self.apply_content(self.get_content(**fields))
 
-        self.set_name("playerctl")
+    def reset(self):
+        self.show_text(self.empty_text)
 
-        self.ticker_direction = 0
 
+class WidgetPlayerCtl(BarWidget):
+    """Media player controls. Unlike other widgets, it runs entirely on GTK
+    main thread: Playerctl signals are delivered there."""
+
+    MAX_SCROLL_SPEED = 100
+    MIN_SCROLL_SPEED = 1
+    DEFAULT_SEEK_OFFSET = 10
+    TICKER_STEP = 10
+
+    TYPE = "playerctl"
+    STATIC = True
+
+    DEFAULT_MODULES = [
+        {"type": "previous", "label": "[icon=skip-back;]"},
+        {"type": "seek_back", "label": "[icon=rewind;]"},
+        {
+            "type": "shuffle",
+            "label_on": "[icon=shuffle;]",
+            "label_off": "[icon=queue;]",
+        },
+        {
+            "type": "play_pause",
+            "label_play": "[icon=play;]",
+            "label_pause": "[icon=pause;]",
+        },
+        {"type": "seek_forward", "label": "[icon=fast-forward;]"},
+        {"type": "next", "label": "[icon=skip-forward;]"},
+        {
+            "type": "title",
+            "label_empty": "[icon=music-note;]-----",
+            "ticker": True,
+            "scroll_speed": 10,
+            "scroll_width": 128,
+            "label_format": "[icon=music-note;]{artist} - {album} - {title}",
+        },
+        {
+            "type": "time",
+            "label_empty": "[icon=timer;]--:--",
+            "label_format": "[icon=timer;]{current}/{total}",
+        },
+    ]
+
+    MODULE_TYPES = frozenset(
+        {
+            "previous",
+            "next",
+            "seek_back",
+            "seek_forward",
+            "shuffle",
+            "play_pause",
+            "title",
+            "time",
+            "volume",
+        }
+    )
+
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        player_names = self.cfg.get("player_names") or []
+
+        if not isinstance(player_names, list):
+            raise BarConfigError("'player_names' must be a list")
+
+        # any player if empty
+        self.player_names = set(player_names)
+
+        self.always_show = self.cfg.get("always_show", True)
+        tick_ms = min(max(self.cfg.get("tick_ms", 500), 10), 2000)
+        self.seek_offset = self.cfg.get("seek_offset", self.DEFAULT_SEEK_OFFSET)
+
+        modules = self.cfg.get("modules") or self.DEFAULT_MODULES
+
+        if not isinstance(modules, list):
+            raise BarConfigError("'modules' must be a list")
+
+        self.player: Playerctl.Player | None = None
         self.t_total = 0
+        self._t_last = -1
+        self.ticker = False
+        self.ticker_direction = 0
+        self.h_adj: Gtk.Adjustment | None = None
 
-        self.formatter = OptionalFormatter()
+        self.btn_play_pause = None
+        self.btn_shuffle = None
+        self.btn_time = None
+        self.btn_title = None
+        self.btn_volume = None
+
+        for module in modules:
+            if (mod_type := module.get("type")) not in self.MODULE_TYPES:
+                logging.warning("playerctl: unknown module type '%s'", mod_type)
+                continue
+
+            self._add_module(mod_type, module)
+
+        self.add_css_class("playerctl")
 
         self.manager = Playerctl.PlayerManager()
+        self.manager.connect("name-appeared", self._on_name_appeared)
+        self.manager.connect("player-vanished", self._on_player_vanished)
+
+        for player_name in self.manager.props.player_names:
+            self._init_player(player_name)
+
+        if self.player is None:
+            self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
+
+        GLib.timeout_add(tick_ms, self._tick)
+
+    def _button(
+        self,
+        name: str,
+        label: str,
+        action=None,
+        *args,
+        alt_texts: tuple[str, ...] = (),
+    ) -> PlayerctlButton:
+        button = PlayerctlButton(
+            name, self.res_mgr, empty_text=label, alt_texts=alt_texts
+        )
+        if action is not None:
+            button.onclick_call(1, self._player_call, action, *args)
+        self.append(button)
+        return button
+
+    def _add_module(self, mod_type: str, module: dict[str, Any]):
+        match mod_type:
+            case "play_pause":
+                self.label_play = module.get("label_play", "play")
+                self.label_pause = module.get("label_pause", "pause")
+                self.btn_play_pause = self._button(
+                    "playerctl-play-pause",
+                    self.label_play,
+                    "play_pause",
+                    alt_texts=(self.label_pause,),
+                )
+            case "next":
+                self._button("playerctl-next", module.get("label", "next"), "next")
+            case "previous":
+                self._button(
+                    "playerctl-previous", module.get("label", "prev"), "previous"
+                )
+            case "seek_back":
+                self._button(
+                    "playerctl-seek-back",
+                    module.get("label", "rw"),
+                    "seek",
+                    -self.seek_offset * 10**6,
+                )
+            case "seek_forward":
+                self._button(
+                    "playerctl-seek-forward",
+                    module.get("label", "ff"),
+                    "seek",
+                    self.seek_offset * 10**6,
+                )
+            case "shuffle":
+                self.label_shuffle_on = module.get("label_on", "shuffle")
+                self.label_shuffle_off = module.get("label_off", "no shuffle")
+                self.btn_shuffle = self._button(
+                    "playerctl-shuffle",
+                    self.label_shuffle_off,
+                    alt_texts=(self.label_shuffle_on,),
+                )
+                self.btn_shuffle.onclick_call(1, self._toggle_shuffle)
+            case "time":
+                self.btn_time = PlayerctlButton(
+                    "playerctl-time",
+                    self.res_mgr,
+                    module.get("label_format", "{current}/{total}"),
+                    module.get("label_empty", "--:--"),
+                )
+                self.append(self.btn_time)
+            case "volume":
+                self.btn_volume = PlayerctlButton(
+                    "playerctl-volume",
+                    self.res_mgr,
+                    module.get("format", "{volume}%"),
+                    module.get("label_empty"),
+                )
+                self.append(self.btn_volume)
+            case "title":
+                self._add_title(module)
+
+    def _add_title(self, module: dict[str, Any]):
+        scroll_speed = module.get("scroll_speed", 10)
+        scroll_width = module.get("scroll_width", 0)
+
+        self.ticker = module.get("ticker", False)
+        self.btn_title = PlayerctlButton(
+            "playerctl-title",
+            self.res_mgr,
+            module.get("label_format", "{artist} - {album} - {title}"),
+            module.get("label_empty", ""),
+        )
+
+        scroll_view = Gtk.ScrolledWindow.new()
+
+        if scroll_width > 0:
+            scroll_speed = max(
+                self.MIN_SCROLL_SPEED, min(scroll_speed, self.MAX_SCROLL_SPEED)
+            )
+            scroll_view.set_min_content_width(scroll_width)
+            scroll_view.set_size_request(scroll_width, -1)
+            scroll_view.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+
+            viewport = Gtk.Viewport.new()
+            viewport.set_child(self.btn_title)
+            viewport.set_scroll_to_focus(False)
+
+            h_adj = scroll_view.get_hadjustment()
+            self.h_adj = h_adj
+
+            def _scroll(_ctrl, _dx, dy):
+                h_adj.set_value(h_adj.get_value() + (dy * scroll_speed))
+                return True
+
+            scroll_ctrl = Gtk.EventControllerScroll.new(
+                Gtk.EventControllerScrollFlags.VERTICAL
+            )
+            scroll_ctrl.connect("scroll", _scroll)
+            viewport.add_controller(scroll_ctrl)
+            scroll_view.set_child(viewport)
+        else:
+            scroll_view.set_propagate_natural_width(True)
+            scroll_view.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+            scroll_view.set_child(self.btn_title)
+
+        self.append(scroll_view)
+
+    # Players
+
+    def _init_player(self, player_name: Playerctl.PlayerName):
+        if self.player_names and player_name.name not in self.player_names:
+            return
+
+        player = Playerctl.Player.new_from_name(player_name)
+
+        player.connect("playback-status", self._on_status)
+        player.connect("metadata", self._on_metadata)
+        player.connect("volume", self._on_volume)
+        player.connect("seeked", self._on_seek)
+        player.connect("shuffle", self._on_shuffle)
+        self.manager.manage_player(player)
+
+        props = player.props
+
+        if not props.can_control:
+            logging.warning("player %s cannot be controlled", player_name.name)
+
+        self.player = player
+
+        self._on_metadata(player, props.metadata)
+        self._on_volume(player, props.volume)
+        self._on_shuffle(player, props.shuffle)
+        self._on_status(player, props.playback_status)
+
+    def _on_name_appeared(self, _manager, player_name: Playerctl.PlayerName):
+        self._init_player(player_name)
+
+    def _on_player_vanished(self, manager, player: Playerctl.Player):
+        if player is not self.player:
+            return
 
         self.player = None
 
-        self.player_ready = anyio.Event()
+        if manager.props.players:
+            # switch to another managed player
+            self.player = manager.props.players[0]
+            self._on_metadata(self.player, self.player.props.metadata)
+            self._on_status(self.player, self.player.props.playback_status)
+        else:
+            self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
 
-        self._t_last = 0.0
-
-        self._run = True
-
-        self.tick = min(max(tick_ms, 10), 2000) / 1000
-
-        self.always_show = always_show
-
-        self.box_title = None
-        self.btn_next = None
-        self.btn_play_pause = None
-        self.btn_previous = None
-        self.btn_previous = None
-        self.btn_seek_back = None
-        self.btn_seek_forward = None
-        self.btn_volume = None
-        self.btn_time = None
-        self.h_adj = None
-        self.label_pause = None
-        self.label_play = None
-        self.label_shuffle_on = None
-        self.label_shuffle_off = None
-        self.scroll_view = None
-        self.vol_labels = []
-        self.ticker = False
-        self.btn_shuffle = None
-        scroll_speed = self.MIN_SCROLL_SPEED
-
-        if modules is None or not modules:
-            modules = self.MODULES
-
-        supported_mods = set()
-
-        for supported_mod in self.MODULES:
-            if (supported_mod_type := supported_mod.get("type")) is not None:
-                supported_mods.add(supported_mod_type)
-
-        for module in modules:
-            mod_type = module.get("type")
-            if mod_type not in supported_mods:
-                continue
-
-            match mod_type:
-                case "play_pause":
-                    if "label_play" in module and "label_pause" in module:
-                        self.label_play = module["label_play"]
-                        self.label_pause = module["label_pause"]
-                        self.btn_play_pause = PlayerctlButton(
-                            "playerctl-play-pause", self.label_play
-                        )
-                        self.append(self.btn_play_pause)
-                case "next":
-                    if "label" in module:
-                        self.btn_next = PlayerctlButton(
-                            "playerctl-next", module["label"]
-                        )
-                        self.append(self.btn_next)
-                case "previous":
-                    if "label" in module:
-                        self.btn_previous = PlayerctlButton(
-                            "playerctl-previuos", module["label"]
-                        )
-                        self.append(self.btn_previous)
-                case "seek_back":
-                    if "label" in module:
-                        self.btn_seek_back = PlayerctlButton(
-                            "playerctl-seek-back", module["label"]
-                        )
-                        self.append(self.btn_seek_back)
-                case "seek_forward":
-                    if "label" in module:
-                        self.btn_seek_forward = PlayerctlButton(
-                            "playerctl-seek-forward", module["label"]
-                        )
-                        self.append(self.btn_seek_forward)
-                case "shuffle":
-                    if "label_on" in module and "label_off" in module:
-                        self.label_shuffle_on = module["label_on"]
-                        self.label_shuffle_off = module["label_off"]
-                        self.btn_shuffle = PlayerctlButton(
-                            "playerctl-shuffle", self.label_shuffle_off
-                        )
-                        self.append(self.btn_shuffle)
-                case "time":
-                    self.btn_time = PlayerctlButton(
-                        "playerctl-time",
-                        module.get("label_empty"),
-                        module.get("label_format"),
-                    )
-                    self.append(self.btn_time)
-                case "volume":
-                    if "format" in module:
-                        for vol in range(0, 101):
-                            vol_label = self.formatter.format(
-                                module["format"], volume=vol
-                            )
-                            self.vol_labels.append(vol_label)
-                        self.btn_volume = PlayerctlButton(
-                            "playerctl-volume", self.vol_labels[0]
-                        )
-                        self.append(self.btn_volume)
-                case "title":
-                    label_empty = module.get("label_empty", "")
-                    scroll_speed = module.get("scroll_speed", 10)
-                    scroll_width = module.get("scroll_width", 0)
-                    label_format = module.get("label_format")
-
-                    self.ticker = module.get("ticker", False)
-                    self.label_title = PlayerctlButton(
-                        "playerctl-title", label_empty, label_format
-                    )
-                    self.scroll_view = Gtk.ScrolledWindow.new()
-                    self.box_title = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-                    self.box_title.append(self.label_title)
-
-                    if scroll_width > 0:
-                        scroll_speed = max(1, min(scroll_speed, self.MAX_SCROLL_SPEED))
-                        self.scroll_view.set_min_content_width(scroll_width)
-                        self.scroll_view.set_size_request(scroll_width, -1)
-                        self.scroll_view.set_policy(
-                            Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER
-                        )
-                        viewport = Gtk.Viewport.new()
-                        viewport.set_child(self.box_title)
-
-                        self.h_adj = self.scroll_view.get_hadjustment()
-
-                        def _scroll(ctrl, _, direction):
-                            self.h_adj.set_value(
-                                self.h_adj.get_value() + (direction * scroll_speed)
-                            )
-
-                        scroll_ctrl = Gtk.EventControllerScroll.new(
-                            Gtk.EventControllerScrollFlags.VERTICAL
-                        )
-
-                        scroll_ctrl.connect("scroll", _scroll)
-                        viewport.add_controller(scroll_ctrl)
-                        viewport.set_scroll_to_focus(False)
-                        self.scroll_view.set_child(viewport)
-                    else:
-                        self.scroll_view.set_propagate_natural_width(True)
-                        self.scroll_view.set_policy(
-                            Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER
-                        )
-                        self.scroll_view.set_child(self.box_title)
-
-                    self.append(self.scroll_view)
-
-        self.set_visible_idle(self.always_show)
-
-    def init_player(self, name):
-        if name.name in self.player_names:
-            player = Playerctl.Player.new_from_name(name)
-
-            props = player.props
-
-            player.connect("playback-status", self.on_status)
-            player.connect("metadata", self.on_metadata)
-            player.connect("volume", self.on_volume)
-            player.connect("seeked", self.on_seek)
-            player.connect("shuffle", self.on_shuffle)
-            self.manager.manage_player(player)
-
-            self.on_status(player, props.playback_status)
-            self.on_volume(player, props.volume)
-            self.on_metadata(player, props.metadata)
-            self.on_shuffle(player, props.shuffle)
-
-            if props.can_control:
-                if props.can_play and props.can_pause:
-                    if self.btn_play_pause is not None:
-                        self.btn_play_pause.onclick_call(
-                            1, self._player_call_threadsafe, "play_pause"
-                        )
-                else:
-                    self.log.warning(
-                        "player %s playback cannot be remotely started or stopped",
-                        name.name,
-                    )
-
-                if props.can_go_next and props.can_go_previous:
-                    if self.btn_next is not None:
-                        self.btn_next.onclick_call(
-                            1, self._player_call_threadsafe, "next"
-                        )
-
-                    if self.btn_previous is not None:
-                        self.btn_previous.onclick_call(
-                            1, self._player_call_threadsafe, "previous"
-                        )
-
-                if self.btn_shuffle is not None:
-                    self.btn_shuffle.onclick_call(1, self.toggle_shuffle_threadsafe)
-
-            else:
-                self.log.warning("player %s cannot be controlled", name.name)
-
-            self.player = player
-
-    def toggle_shuffle_threadsafe(self):
+    def _player_call(self, method: str, *args):
         if self.player is not None:
-            self._player_call_threadsafe("set_shuffle", not self.player.props.shuffle)
+            try:
+                getattr(self.player, method)(*args)
+            except GLib.Error as ex:
+                logging.error("cannot perform action %s: %s", method, ex.message)
 
-    def _player_call_threadsafe(self, method: str, *args):
+    def _toggle_shuffle(self):
+        if self.player is not None:
+            self._player_call("set_shuffle", not self.player.props.shuffle)
 
-        def _call_method(method: str, *args):
-            if self.player is not None:
-                try:
-                    getattr(self.player, method)(*args)
-                except GLib.GError:
-                    self.log.error("cannot perform action: %s", method)
+    # Player signals
 
-        self.elt_run_sync(_call_method, method, *args)
+    def _on_metadata(self, player: Playerctl.Player, metadata: GLib.Variant | None):
+        if player is not self.player:
+            return
 
-    def increment_ticker_idle(self):
+        meta = metadata.unpack() if metadata is not None else {}
 
-        if self.ticker and self.h_adj is not None:
-            curr_value = self.h_adj.get_value()
+        artists = meta.get("xesam:artist")
+        artist = artists[0] if artists else "Unknown Artist"
+        album = meta.get("xesam:album") or "Unknown Album"
+        title = meta.get("xesam:title") or "Unknown Title"
 
-            if (curr_value + self.h_adj.get_page_size()) >= self.h_adj.get_upper():
-                self.ticker_direction = -1
-            elif curr_value <= 1:
-                self.ticker_direction = 1
+        self.t_total = int(meta.get("mpris:length", 0) / 10**6)
+        self._t_last = -1
 
-            if self.ticker_direction != 0:
-                GLib.idle_add(
-                    self.h_adj.set_value, curr_value + (self.ticker_direction * 10)
-                )
+        if self.btn_title is not None:
+            self.btn_title.show_fields(artist=artist, album=album, title=title)
 
-    def on_metadata(self, player: Playerctl.Player, metadata: Gtk.GVariant):
-        self.reset_time()
+        if self.h_adj is not None:
+            self.h_adj.set_value(0)
 
-        if player is not None:
-            self.log.debug(
-                "received metadata for player: <%s>", player.props.player_name
-            )
-            self.player = player
+    def _on_volume(self, player: Playerctl.Player, volume: float):
+        if player is self.player and self.btn_volume is not None:
+            self.btn_volume.show_fields(volume=round(volume * 100))
 
-            keys = metadata.keys()
-
-            artist = "Unknown Artist"
-            if "xesam:artist" in keys and metadata["xesam:artist"]:
-                artist = metadata["xesam:artist"][0]
-
-            album = "Unknown Album"
-            if "xesam:album" in keys and metadata["xesam:album"]:
-                album = metadata["xesam:album"]
-
-            title = "Unknown Title"
-            if "xesam:title" in keys and metadata["xesam:title"]:
-                title = metadata["xesam:title"]
-
-            if "mpris:length" in keys:
-                self.t_total = int(metadata["mpris:length"] / 10**6)
-
-            self.format_title_idle(artist=artist, album=album, title=title)
-
-    def on_volume(self, player: Playerctl.Player, volume: float):
-        vol = int(volume)
-        if self.vol_labels:
-            self.set_volume_idle(self.vol_labels[vol])
-
-    def on_name_appeared(
-        self, manager: Playerctl.PlayerManager, name: Playerctl.PlayerName
-    ):
-        self.init_player(name)
-
-    def on_player_vanished(
-        self, manager: Playerctl.PlayerManager, player: Playerctl.Player
-    ):
-        self.player_ready.clear()
-        self.on_status(None, Playerctl.PlaybackStatus.STOPPED)
-
-    def reset_time(self):
-
-        def _reset():
-            self._t_last = 0
-
-        self.elt_run_sync(_reset)
-
-    def on_shuffle(self, player: Playerctl.Player, shuffle_status: bool):
-        self.player = player
-
-        if self.btn_shuffle is not None:
+    def _on_shuffle(self, player: Playerctl.Player, shuffle_status: bool):
+        if player is self.player and self.btn_shuffle is not None:
             if shuffle_status:
-                self.btn_shuffle.set_label_idle(self.label_shuffle_on)
+                self.btn_shuffle.show_text(self.label_shuffle_on)
             else:
-                self.btn_shuffle.reset_label_idle()
+                self.btn_shuffle.show_text(self.label_shuffle_off)
 
-    def on_seek(self, player: Playerctl.Player, *_):
-        self.on_status(player, player.props.playback_status)
+    def _on_seek(self, player: Playerctl.Player, *_):
+        if player is self.player:
+            self._t_last = -1
+            self._show_time()
 
-    def on_status(self, player: Playerctl.Player, status: Playerctl.PlaybackStatus):
-        self.reset_time()
+    def _on_status(
+        self, player: Playerctl.Player | None, status: Playerctl.PlaybackStatus
+    ):
+        if player is not None and player is not self.player:
+            if status != Playerctl.PlaybackStatus.PLAYING:
+                return
+            # follow the player that started playing
+            self.player = player
+            self._on_metadata(player, player.props.metadata)
+
+        self._t_last = -1
 
         if status == Playerctl.PlaybackStatus.PLAYING:
-            self.player = player
-            self.set_visible_idle(True)
-            self.player_ready.set()
-            self.set_play_idle(False)
+            self.set_visible(True)
+            self._show_play_button(False)
+            self._show_time()
         elif status == Playerctl.PlaybackStatus.PAUSED:
-            self.player_ready.clear()
-
-            if player is not None:
-                raw_sec = int(player.get_position() / 10**6)
-                t_min, t_sec = divmod(raw_sec, 60)
-                t_tot_min, t_tot_sec = divmod(self.t_total, 60)
-                self.format_time_idle(
-                    current=f"{t_min}:{t_sec:02d}", total=f"{t_tot_min}:{t_tot_sec:02d}"
-                )
-
-            self.set_play_idle(True)
+            self.set_visible(True)
+            self._show_play_button(True)
+            self._show_time()
         else:
-            self.set_visible_idle(self.always_show)
-            self.player_ready.clear()
-            self.format_title_idle()
-            self.format_time_idle()
-            self.set_volume_idle(None)
+            self.set_visible(self.always_show)
+            self._show_play_button(True)
             self.t_total = 0
 
-    def format_time_idle(self, **kwargs):
-        if self.btn_time is not None:
-            if not kwargs:
-                self.btn_time.reset_label_idle()
-            else:
-                self.btn_time.format_label_idle(**kwargs)
+            for button in (self.btn_title, self.btn_time, self.btn_volume):
+                if button is not None:
+                    button.reset()
 
-    def set_play_idle(self, is_play: bool):
+    def _show_play_button(self, is_play: bool):
         if self.btn_play_pause is not None:
-            if is_play:
-                self.btn_play_pause.set_label_idle(self.label_play)
-            else:
-                self.btn_play_pause.set_label_idle(self.label_pause)
+            self.btn_play_pause.show_text(
+                self.label_play if is_play else self.label_pause
+            )
 
-    def format_title_idle(self, **kwargs):
-        if self.label_title is not None:
-            if not kwargs:
-                self.label_title.reset_label_idle()
-            else:
-                self.label_title.format_label_idle(**kwargs)
+    def _show_time(self):
+        if self.btn_time is None or self.player is None:
+            return
 
-    def set_volume_idle(self, volume_str: str | None):
-        if self.btn_volume is not None:
-            if volume_str is None:
-                self.btn_volume.reset_label_idle()
-            else:
-                self.btn_volume.set_label_idle(volume_str)
+        try:
+            position = self.player.props.position // 10**6
+        except GLib.Error:
+            return
 
-    async def watch_positon(self):
+        if position != self._t_last:
+            self._t_last = position
+            self.btn_time.show_fields(
+                current=format_time(position), total=format_time(self.t_total)
+            )
 
-        while self._run:
-            await self.player_ready.wait()
+    def _scroll_ticker(self):
+        if not self.ticker or self.h_adj is None:
+            return
 
-            self.reset_time()
+        value = self.h_adj.get_value()
 
-            if self.player is not None:
-                t_tot_min, t_tot_sec = divmod(self.t_total, 60)
+        if value + self.h_adj.get_page_size() >= self.h_adj.get_upper():
+            self.ticker_direction = -1
+        elif value <= 1:
+            self.ticker_direction = 1
 
-                while self.player_ready.is_set():
-                    if (
-                        self.player.props.playback_status
-                        == Playerctl.PlaybackStatus.PLAYING
-                    ):
-                        raw_sec = int(self.player.get_position() / 10**6)
+        self.h_adj.set_value(value + self.ticker_direction * self.TICKER_STEP)
 
-                        if self._t_last < raw_sec:
-                            self._t_last = raw_sec
+    def _tick(self) -> bool:
+        if (
+            self.player is not None
+            and self.player.props.playback_status == Playerctl.PlaybackStatus.PLAYING
+        ):
+            self._show_time()
+            self._scroll_ticker()
 
-                            t_min, t_sec = divmod(raw_sec, 60)
-
-                            self.format_time_idle(
-                                current=f"{t_min}:{t_sec:02d}",
-                                total=f"{t_tot_min}:{t_tot_sec:02d}",
-                            )
-
-                        self.increment_ticker_idle()
-
-                        await anyio.sleep(self.tick)
-            await anyio.sleep(1)
-
-    async def run(self):
-        self.manager.connect("name-appeared", self.on_name_appeared)
-        self.manager.connect("player-vanished", self.on_player_vanished)
-
-        for name in self.manager.props.player_names:
-            self.init_player(name)
-
-        async with anyio.create_task_group() as grp:
-            grp.start_soon(self.watch_positon)
-
-    def stop(self):
-        raise NotImplementedError()
-
-    def update(self):
-        raise NotImplementedError()
+        return GLib.SOURCE_CONTINUE

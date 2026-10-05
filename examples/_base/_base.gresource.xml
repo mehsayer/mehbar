@@ -1,46 +1,65 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
 	<gresource prefix="/org/mehbar/themes/_base">
-		<file alias="icons/brightness-3-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/brightness-3-symbolic.svg</file>
-		<file alias="icons/window-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/window-symbolic.svg</file>
-		<file alias="icons/scratchpad-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/scratchpad-symbolic.svg</file>
-		<file alias="icons/clock-7-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-7-symbolic.svg</file>
-		<file alias="icons/clock-12-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-12-symbolic.svg</file>
+		<file alias="icons/globe-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/globe-symbolic.svg</file>
+		<file alias="icons/network-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/network-symbolic.svg</file>
+		<file alias="icons/speaker-x-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/speaker-x-symbolic.svg</file>
+		<file alias="icons/speaker-none-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/speaker-none-symbolic.svg</file>
+		<file alias="icons/circle-fill-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/circle-fill-symbolic.svg</file>
+		<file alias="icons/battery-high-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-high-symbolic.svg</file>
+		<file alias="icons/skip-forward-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/skip-forward-symbolic.svg</file>
+		<file alias="icons/wifi-medium-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-medium-symbolic.svg</file>
+		<file alias="icons/pause-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/pause-symbolic.svg</file>
 		<file alias="icons/cpu-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/cpu-symbolic.svg</file>
-		<file alias="icons/fire-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/fire-symbolic.svg</file>
-		<file alias="icons/disk-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/disk-symbolic.svg</file>
-		<file alias="icons/wifi-off-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-off-symbolic.svg</file>
-		<file alias="icons/clock-1-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-1-symbolic.svg</file>
-		<file alias="icons/clock-10-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-10-symbolic.svg</file>
-		<file alias="icons/sep-vertical-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/sep-vertical-symbolic.svg</file>
-		<file alias="icons/clock-4-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-4-symbolic.svg</file>
-		<file alias="icons/inhibitor-off-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/inhibitor-off-symbolic.svg</file>
-		<file alias="icons/wifi-1-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-1-symbolic.svg</file>
-		<file alias="icons/wifi-2-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-2-symbolic.svg</file>
-		<file alias="icons/clock-9-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-9-symbolic.svg</file>
-		<file alias="icons/volume-1-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/volume-1-symbolic.svg</file>
-		<file alias="icons/wired-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wired-symbolic.svg</file>
-		<file alias="icons/clock-3-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-3-symbolic.svg</file>
+		<file alias="icons/command-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/command-symbolic.svg</file>
+		<file alias="icons/speaker-high-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/speaker-high-symbolic.svg</file>
+		<file alias="icons/bluetooth-slash-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/bluetooth-slash-symbolic.svg</file>
+		<file alias="icons/battery-charging-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-charging-symbolic.svg</file>
+		<file alias="icons/skip-back-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/skip-back-symbolic.svg</file>
+		<file alias="icons/queue-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/queue-symbolic.svg</file>
+		<file alias="icons/keyboard-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/keyboard-symbolic.svg</file>
+		<file alias="icons/rewind-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/rewind-symbolic.svg</file>
+		<file alias="icons/LICENSE" compressed="true">icons/LICENSE</file>
+		<file alias="icons/speaker-low-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/speaker-low-symbolic.svg</file>
+		<file alias="icons/circle-dashed-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/circle-dashed-symbolic.svg</file>
+		<file alias="icons/warning-circle-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/warning-circle-symbolic.svg</file>
+		<file alias="icons/moon-stars-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/moon-stars-symbolic.svg</file>
+		<file alias="icons/sun-dim-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/sun-dim-symbolic.svg</file>
+		<file alias="icons/fan-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/fan-symbolic.svg</file>
+		<file alias="icons/line-vertical-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/line-vertical-symbolic.svg</file>
+		<file alias="icons/terminal-window-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/terminal-window-symbolic.svg</file>
+		<file alias="icons/wifi-low-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-low-symbolic.svg</file>
+		<file alias="icons/shuffle-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/shuffle-symbolic.svg</file>
+		<file alias="icons/hard-drives-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/hard-drives-symbolic.svg</file>
+		<file alias="icons/wifi-high-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-high-symbolic.svg</file>
 		<file alias="icons/bluetooth-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/bluetooth-symbolic.svg</file>
-		<file alias="icons/volume-2-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/volume-2-symbolic.svg</file>
 		<file alias="icons/memory-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/memory-symbolic.svg</file>
-		<file alias="icons/inhibitor-on-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/inhibitor-on-symbolic.svg</file>
-		<file alias="icons/volume-off-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/volume-off-symbolic.svg</file>
-		<file alias="icons/bluetooth-off-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/bluetooth-off-symbolic.svg</file>
+		<file alias="icons/thermometer-cold-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/thermometer-cold-symbolic.svg</file>
+		<file alias="icons/music-note-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/music-note-symbolic.svg</file>
+		<file alias="icons/sun-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/sun-symbolic.svg</file>
+		<file alias="icons/stack-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/stack-symbolic.svg</file>
 		<file alias="icons/bluetooth-connected-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/bluetooth-connected-symbolic.svg</file>
-		<file alias="icons/brightness-2-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/brightness-2-symbolic.svg</file>
-		<file alias="icons/clock-8-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-8-symbolic.svg</file>
-		<file alias="icons/clock-11-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-11-symbolic.svg</file>
-		<file alias="icons/clock-5-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-5-symbolic.svg</file>
-		<file alias="icons/clock-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-symbolic.svg</file>
-		<file alias="icons/wifi-3-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-3-symbolic.svg</file>
-		<file alias="icons/temp-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/temp-symbolic.svg</file>
-		<file alias="icons/clock-2-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-2-symbolic.svg</file>
-		<file alias="icons/volume-x-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/volume-x-symbolic.svg</file>
-		<file alias="icons/bluetooth-searching-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/bluetooth-searching-symbolic.svg</file>
-		<file alias="icons/brightness-1-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/brightness-1-symbolic.svg</file>
-		<file alias="icons/sep-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/sep-symbolic.svg</file>
-		<file alias="icons/clock-6-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/clock-6-symbolic.svg</file>
+		<file alias="icons/thermometer-simple-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/thermometer-simple-symbolic.svg</file>
+		<file alias="icons/circle-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/circle-symbolic.svg</file>
+		<file alias="icons/moon-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/moon-symbolic.svg</file>
+		<file alias="icons/sun-horizon-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/sun-horizon-symbolic.svg</file>
+		<file alias="icons/network-x-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/network-x-symbolic.svg</file>
+		<file alias="icons/battery-full-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-full-symbolic.svg</file>
+		<file alias="icons/gauge-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/gauge-symbolic.svg</file>
+		<file alias="icons/network-slash-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/network-slash-symbolic.svg</file>
+		<file alias="icons/battery-medium-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-medium-symbolic.svg</file>
+		<file alias="icons/arrows-down-up-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/arrows-down-up-symbolic.svg</file>
+		<file alias="icons/thermometer-hot-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/thermometer-hot-symbolic.svg</file>
+		<file alias="icons/app-window-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/app-window-symbolic.svg</file>
+		<file alias="icons/wifi-none-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-none-symbolic.svg</file>
+		<file alias="icons/wifi-slash-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/wifi-slash-symbolic.svg</file>
+		<file alias="icons/battery-low-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-low-symbolic.svg</file>
+		<file alias="icons/play-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/play-symbolic.svg</file>
+		<file alias="icons/user-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/user-symbolic.svg</file>
+		<file alias="icons/file-text-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/file-text-symbolic.svg</file>
+		<file alias="icons/fast-forward-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/fast-forward-symbolic.svg</file>
+		<file alias="icons/timer-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/timer-symbolic.svg</file>
+		<file alias="icons/battery-warning-symbolic.svg" compressed="true" preprocess="xml-stripblanks">icons/battery-warning-symbolic.svg</file>
 		<file alias="config.toml" compressed="true">config.toml</file>
 		<file alias="style.css" compressed="true">style.css</file>
 	</gresource>

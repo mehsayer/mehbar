@@ -29,12 +29,12 @@ box {
     padding-top: 0.5ex;
 }
 
-#playerctl-previuos,
+#playerctl-previous,
 #playerctl-play-pause,
 #playerctl-next {
     padding: 0 8px 0 8px;
 }
-.workspace {
+.i3-workspace {
     padding: 0 8px 0 8px;
 }
 

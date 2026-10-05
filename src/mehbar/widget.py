@@ -2,24 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import re
-from collections.abc import Callable, Coroutine
+import threading
+import time
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from functools import Placeholder, cache, lru_cache, partial, partialmethod
+from functools import cache, lru_cache
 from typing import Any
 
 import anyio
-from gi.repository import GLib, Gtk  # type: ignore
+from gi.repository import GLib, Gtk, Pango  # type: ignore
 
-from .actions import (
-    ActionInterface,
-    CallableAction,
-    ExecAction,
-    GestureMouseClick,
-)
-from .exceptions import WidgetTerminated
+from .actions import ActionInterface, CallableAction, ExecAction
+from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
 from .tools import OptionalFormatter, next_prime
 
@@ -45,7 +41,7 @@ class WidgetContent:
                     ?){1,3}\s*(?:;)\s*
                 )
                 |(?:\s*tooltip\s*=\s*
-                    (?P<tooltip>[\w\_\-\!\ ]+)?\s*(?:;)\s*)
+                    (?P<tooltip>[^;\]]+)?\s*(?:;)\s*)
             ){1,3}\s*
         \]""",
         re.X,
@@ -55,69 +51,13 @@ class WidgetContent:
     icon_position: IconPosition
     label: str | None
     tooltip_text: str | None
-    icon_classes: set[str] | None
-    label_classes: set[str] | None
-    widget_classes: set[str] | None
-
-    def derive(
-        self,
-        icon: str | None,
-        icon_position: IconPosition | None,
-        label: str | None,
-        tooltip_text: str | None,
-        icon_classes: set[str] | None,
-        label_classes: set[str] | None,
-        widget_classes: set[str] | None,
-    ) -> WidgetContent:
-
-        if icon is None and self.icon is not None:
-            icon_ = self.icon
-        else:
-            icon_ = icon
-
-        icon_position_: IconPosition | None = icon_position
-
-        if icon_position is None and self.icon_position is not None:
-            icon_position_ = self.icon_position
-
-        if label is None and self.label is not None:
-            label_ = self.label
-        else:
-            label_ = label
-
-        if tooltip_text is None and self.tooltip_text is not None:
-            tooltip_text_ = self.tooltip_text
-        else:
-            tooltip_text_ = tooltip_text
-
-        if icon_classes is None and self.icon_classes is not None:
-            icon_classes_ = self.icon_classes
-        else:
-            icon_classes_ = icon_classes
-
-        if label_classes is None and self.label_classes is not None:
-            label_classes_ = self.label_classes
-        else:
-            label_classes_ = label_classes
-
-        if widget_classes is None and self.widget_classes is not None:
-            widget_classes_ = self.widget_classes
-        else:
-            widget_classes_ = widget_classes
-
-        return self.__class__(
-            icon_,
-            icon_position_,
-            label_,
-            tooltip_text_,
-            icon_classes_,
-            label_classes_,
-            widget_classes_,
-        )
+    icon_classes: frozenset[str] | None
+    label_classes: frozenset[str] | None
+    widget_classes: frozenset[str] | None
 
     @classmethod
     @cache
-    def parse(cls, text: str) -> WidgetContent:
+    def parse(cls, text: str | None) -> WidgetContent:
         """
         Parses the string of the following format, returns a `WidgetContent` instance:
             [<ICON SPECIFICATION>;<CSS CLASSES>;<TOOLTIP TEXT>;] <TEXT>
@@ -130,15 +70,16 @@ class WidgetContent:
                         `>`, to the right, or `<`, to the left from the label.
                         Optional, defaults to `<` if not specified.
             CSS CLASSES
-                widget=<CLASS 1>, ..., <CLASS N>
-                    Space-separated list of CSS classes to be applied to the widget
-                icon=<CLASS 1>, ..., <CLASS N>
-                    Space-separated list of CSS classes to be applied to the icon
-                label=<CLASS 1>, ..., <CLASS N>
-                    Space-separated list of CSS classes to be applied to the label
+                classes:widget=<CLASS 1> ... <CLASS N>, icon=..., label=...
+                    widget=<CLASS 1> ... <CLASS N>
+                        Space-separated list of CSS classes to be applied to the widget
+                    icon=<CLASS 1> ... <CLASS N>
+                        Space-separated list of CSS classes to be applied to the icon
+                    label=<CLASS 1> ... <CLASS N>
+                        Space-separated list of CSS classes to be applied to the label
             TOOLTIP
                 tooltip=<TOOLTIP TEXT>
-                    ...
+                    Tooltip text, may contain format fields
             TEXT
                 Label text
 
@@ -169,15 +110,16 @@ class WidgetContent:
                             icon_position = IconPosition.START
 
                 if (icon_classes_ := match_spec.group("icls")) is not None:
-                    icon_classes = set(icon_classes_.split())
+                    icon_classes = frozenset(icon_classes_.split())
 
                 if (label_classes_ := match_spec.group("lcls")) is not None:
-                    label_classes = set(label_classes_.split())
+                    label_classes = frozenset(label_classes_.split())
 
                 if (widget_classes_ := match_spec.group("wcls")) is not None:
-                    widget_classes = set(widget_classes_.split())
+                    widget_classes = frozenset(widget_classes_.split())
 
-                tooltip_text = match_spec.group("tooltip")
+                if (tooltip_text_ := match_spec.group("tooltip")) is not None:
+                    tooltip_text = tooltip_text_.strip()
 
             label = cls.RE_SPEC.sub("", text)
 
@@ -192,56 +134,283 @@ class WidgetContent:
         )
 
 
+class IdleUpdater:
+    """Calls `apply` with the most recently submitted value on GTK main
+    thread. Values superseded before GTK main thread catches up are dropped,
+    as are values equal to the previously submitted one. `submit()` is safe
+    to call from any thread."""
+
+    _NOTHING = object()
+
+    def __init__(self, apply: Callable[[Any], None]):
+        self._apply = apply
+        self._lock = threading.Lock()
+        self._last: Any = self._NOTHING
+        self._pending: Any = self._NOTHING
+
+    def submit(self, value: Any):
+        with self._lock:
+            if value == self._last:
+                return
+
+            self._last = value
+            scheduled = self._pending is not self._NOTHING
+            self._pending = value
+
+        if not scheduled:
+            GLib.idle_add(self._flush)
+
+    def _flush(self) -> bool:
+        with self._lock:
+            value, self._pending = self._pending, self._NOTHING
+
+        if value is not self._NOTHING:
+            self._apply(value)
+
+        return GLib.SOURCE_REMOVE
+
+
 class RewriteMixin:
+    """Rewrites text using the `rewrite` mapping of regular expressions to
+    replacements, the first matching expression wins."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rewrite = self.cfg.get("rewrite")  # type: ignore
-        self.rewrite = lru_cache(maxsize=32)(self.rewrite)
 
-    def rewrite(self, text: str) -> str:
-        result = text
-        if self._rewrite is not None and text is not None:
-            for pattern, repl in self._rewrite.items():
-                if re.match(pattern, text) is not None:
-                    result = re.sub(pattern, repl, text)
-                    break
+        rules = self.cfg.get("rewrite") or {}  # type: ignore[attr-defined]
 
-        return result
+        if not isinstance(rules, dict):
+            raise BarConfigError("'rewrite' must be a mapping")
+
+        try:
+            self._rewrite_rules = [(re.compile(p), r) for p, r in rules.items()]
+        except re.error as ex:
+            raise BarConfigError(f"invalid rewrite pattern: {ex}") from ex
+
+        self.rewrite = lru_cache(maxsize=64)(self._rewrite)
+
+    def _rewrite(self, text: str) -> str:
+        if text is not None:
+            for pattern, repl in self._rewrite_rules:
+                if pattern.match(text) is not None:
+                    try:
+                        return pattern.sub(repl, text)
+                    except re.error as ex:
+                        logging.error("cannot rewrite '%s': %s", text, ex)
+                        break
+        return text
 
 
 class JSONInputMixin:
-    async def set_content_json_i(self, json_str: str):
-        if json_str.strip():
+    """Sets widget content from text lines. A line containing a JSON object
+    provides format fields, `ramp_level` selects the ramp. Any other line is
+    available as the `label` field."""
+
+    def set_content_from_line_i(self, line: str):
+        if not (line := line.strip()):
+            return
+
+        values = None
+
+        if line.startswith("{"):
             try:
-                val_map = json.loads(json_str)
-                self.set_new_content_i(**val_map)
+                values = json.loads(line)
             except json.JSONDecodeError as ex:
-                logging.error("failed to parse JSON input: %s", ex)
-        await anyio.sleep(0.1)
+                logging.warning("failed to parse JSON input: %s", ex)
+
+        if not isinstance(values, dict):
+            values = {"label": line}
+
+        # 'ramp_level' is also available as a label field
+        ramp_level = values.get("ramp_level", -1)
+
+        try:
+            ramp_level = int(ramp_level)
+        except (TypeError, ValueError, OverflowError):
+            logging.warning("invalid 'ramp_level' value: %r", ramp_level)
+            ramp_level = -1
+
+        self.set_content_i(self.format_content(ramp_level, values))  # type: ignore[attr-defined]
 
 
-# TODO: this is for I3 workspaceses
-class WidgetBaseA(Gtk.Box):
-    def __init__(self, name: str, res_mgr: ResourceManager):
+class BarWidget(Gtk.Box):
+    """Base class of all bar widgets.
+
+    Widgets are constructed on GTK main thread, their `run()` coroutine runs
+    on a separate event loop thread. Methods ending with `_i` are safe to call
+    from any thread, they schedule GTK updates on the main thread.
+    """
+
+    TYPE: str
+    UNIQUE = True
+    STATIC = False
+    # make the interval at least `ResourceManager.INTERVAL_OFFSET` apart from
+    # other widget intervals
+    RELAX_INTERVAL = True
+    # wake up at wall clock multiples of the interval
+    ALIGN_INTERVAL = False
+
+    def __init__(
+        self, name: str, res_mgr: ResourceManager, cfg: dict[str, Any] | None = None
+    ):
         super().__init__()
 
         self.res_mgr = res_mgr
+        # for use outside of GTK main thread
+        self.widget_name = name
         self.set_name(name)
         self.add_css_class("bar-widget")
 
-        self.cfg = res_mgr.get_cfg_for_name(name)
+        self.cfg = res_mgr.get_cfg_for_name(name) if cfg is None else cfg
+
+        interval = self.cfg.get("interval", 0)
+
+        if not isinstance(interval, (int, float)) or interval < 0:
+            raise BarConfigError("'interval' must be a non-negative number")
+
+        if interval > 0:
+            if self.RELAX_INTERVAL and self.cfg.get("relax_interval", True):
+                interval = res_mgr.relax_interval(interval)
+
+            if self.ALIGN_INTERVAL:
+                self._period = float(interval)
+            else:
+                self._period = next_prime(int(interval * 1000)) / 1000
+        else:
+            self._period = 0.0
+
+        self.interval = interval
+        self._stopped = False
+        self._deadline: float | None = None
+
+        if (onclick := self.cfg.get("onclick")) is not None:
+            if not isinstance(onclick, list):
+                raise BarConfigError("'onclick' must be a list of commands")
+
+            # the first command is for the primary (left) button
+            for button, cmdline in enumerate(onclick, start=1):
+                if cmdline:
+                    self.onclick_exec(button, cmdline)
+
+        if (onscroll := self.cfg.get("onscroll")) is not None:
+            if not isinstance(onscroll, list) or len(onscroll) != 2:
+                raise BarConfigError("'onscroll' must be a list of two commands")
+            self.onscroll_exec(*onscroll)
+
+    # Lifecycle
+
+    async def sleep_interval(self) -> bool:
+        """Returns immediately when called for the first time, then sleeps for
+        the configured interval. Returns `False` if the widget should stop."""
+
+        if self._stopped:
+            return False
+
+        if self._deadline is None:
+            self._deadline = anyio.current_time()
+            return True
+
+        if self._period <= 0:
+            return False
+
+        if self.ALIGN_INTERVAL:
+            # wake up just after the boundary, never before it
+            await anyio.sleep(self._period - time.time() % self._period + 0.005)
+        else:
+            now = anyio.current_time()
+            # do not try to catch up if the widget fell behind
+            self._deadline = max(self._deadline + self._period, now)
+            await anyio.sleep_until(self._deadline)
+
+        return not self._stopped
+
+    def shutdown(self):
+        self._stopped = True
+
+    async def run_wrapper(self):
+        if not self.STATIC:
+            await self.run()
+
+    async def run(self):
+        raise NotImplementedError()
+
+    # Thread helpers
+
+    def idle_add(self, func: Callable, *args: Any):
+        """Calls `func` on GTK main thread."""
+
+        def _run():
+            func(*args)
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(_run)
+
+    def call_soon(self, func: Callable, *args: Any):
+        """Calls `func` on the widget event loop thread."""
+        self.res_mgr.loop.call_soon(func, *args)
+
+    def run_soon(self, coro_func: Callable[..., Coroutine], *args: Any):
+        """Starts `coro_func` as a task on the widget event loop."""
+        self.res_mgr.loop.run_soon(coro_func, *args)
+
+    def set_visible_i(self, state: bool):
+        self.idle_add(self.set_visible, state)
+
+    # Input
+
+    def _onclick(self, button: int, action: ActionInterface):
+        if button >= 0 and action is not None:
+            controller = Gtk.GestureClick.new()
+            controller.set_button(button)
+            controller.connect("pressed", lambda *_: action.run())
+            self.add_controller(controller)
+
+    def _onscroll(self, action_up: ActionInterface, action_down: ActionInterface):
+        def _scroll(_ctrl, _dx: float, dy: float) -> bool:
+            if dy < 0:
+                action_up.run()
+            elif dy > 0:
+                action_down.run()
+            return True
+
+        if action_up is not None and action_down is not None:
+            controller = Gtk.EventControllerScroll.new(
+                Gtk.EventControllerScrollFlags.VERTICAL
+                | Gtk.EventControllerScrollFlags.DISCRETE
+            )
+            controller.connect("scroll", _scroll)
+            self.add_controller(controller)
+
+    def onclick_call(self, button: int, func: Callable, *args, **kwargs):
+        """`func` is called on GTK main thread."""
+        self._onclick(button, CallableAction(func, *args, **kwargs))
+
+    def onclick_exec(self, button: int, cmdline: str | list[str]):
+        self._onclick(button, ExecAction(cmdline))
+
+    def onscroll_call(self, func_up: Callable, func_down: Callable):
+        """Functions are called on GTK main thread."""
+        self._onscroll(CallableAction(func_up), CallableAction(func_down))
+
+    def onscroll_exec(self, cmdline_up: str | list[str], cmdline_down: str | list[str]):
+        self._onscroll(ExecAction(cmdline_up), ExecAction(cmdline_down))
 
 
-class WidgetBase(WidgetBaseA):
-    UNIQUE = True
-    STATIC = False
-    INTERVAL_OFFSET = 0.128
+class WidgetBase(BarWidget):
+    """A widget showing a label and, optionally, an icon. The icon is laid out
+    according to the first icon specification found in the label, the ramp
+    or `layout_specs`, texts the widget may show otherwise."""
+
     DFL_RAMP_IDX = 100
-    # DEPRECATED:
-    DEFAULT_RAMP_INDEX = 100
 
-    def __init__(self, name: str, res_mgr: ResourceManager):
-        super().__init__(name, res_mgr)
+    def __init__(
+        self,
+        name: str,
+        res_mgr: ResourceManager,
+        cfg: dict[str, Any] | None = None,
+        layout_specs: Iterable[str] = (),
+    ):
+        super().__init__(name, res_mgr, cfg)
 
         self.label = Gtk.Label.new()
         self.label.add_css_class("bar-widget-label")
@@ -249,14 +418,24 @@ class WidgetBase(WidgetBaseA):
         self.icon = Gtk.Image.new()
         self.icon.add_css_class("bar-widget-icon")
 
-        self.content = WidgetContent.parse(self.cfg.get("label"))
+        if not isinstance(label := self.cfg.get("label", ""), str):
+            raise BarConfigError("'label' must be a string")
 
-        icon_position = IconPosition.NONE
+        self.content = WidgetContent.parse(label)
 
-        if self.content.icon_position != IconPosition.NONE:
-            icon_position = self.content.icon_position
-        elif (ramp := self.cfg.get("ramp")) is not None:
-            for ramp_str in ramp:
+        self.ramp: list[str] = self.cfg.get("ramp") or []
+
+        if not isinstance(self.ramp, list) or not all(
+            isinstance(r, str) for r in self.ramp
+        ):
+            raise BarConfigError("'ramp' must be a list of strings")
+
+        self.max_ramp_level = self.cfg.get("max_ramp_level", self.DFL_RAMP_IDX)
+
+        icon_position = self.content.icon_position
+
+        if icon_position == IconPosition.NONE:
+            for ramp_str in (*self.ramp, *layout_specs):
                 ramp_content = WidgetContent.parse(ramp_str)
                 if ramp_content.icon_position != IconPosition.NONE:
                     icon_position = ramp_content.icon_position
@@ -279,280 +458,142 @@ class WidgetBase(WidgetBaseA):
 
         self.icon.set_pixel_size(self.res_mgr.pixel_size)
 
-        self.set_label = self.label.set_label
-        self.set_from_paintable = self.icon.set_from_paintable
-
-        self._init_loop = False
-        self.loop_token = None
-
-        self._last_content = None
-        self._last_icon = None
-        self._last_label_text = None
-        self._last_css_classes = set()
-        self._last_label_css_classes = set()
-        self._last_icon_css_classes = set()
-
         self.formatter = OptionalFormatter()
-        self.interval = self.cfg.get("interval", 0)
-
-        self.ramp_index_cache = {}
 
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
         self.label.set_single_line_mode(True)
 
-        if (onclick := self.cfg.get("onclick")) is not None:
-            for button, cmdline in enumerate(onclick):
-                self.onclick_exec(button, cmdline)
-
-        if (onscroll := self.cfg.get("onscroll")) is not None:
-            self.onscroll_exec(*onscroll)
-
         if (width_chars := self.cfg.get("width_chars", 0)) > 0:
-            self.set_width_chars(width_chars)
+            self.label.set_width_chars(width_chars)
 
-        if (max_width_chars := self.cfg.get("width_chars", 0)) > 0:
-            self.set_max_width_chars(max_width_chars)
+        if (max_width_chars := self.cfg.get("max_width_chars", 0)) > 0:
+            self.label.set_max_width_chars(max_width_chars)
+            self.label.set_ellipsize(Pango.EllipsizeMode.END)
 
-        self.get_content = lru_cache(maxsize=128)(self.get_content)
+        self._updater = IdleUpdater(self.apply_content)
 
-    async def sleep_interval(self) -> bool:
-        if self._init_loop:
-            if self.interval > 0:
-                self._init_loop = True
+        # State of GTK widgets, GTK main thread only
+        self._shown_icon: str | None = None
+        self._shown_label: str | None = None
+        self._shown_tooltip: str | None = None
+        self._shown_classes: dict[Gtk.Widget, frozenset[str]] = {
+            self: frozenset(),
+            self.label: frozenset(),
+            self.icon: frozenset(),
+        }
 
-                interval_offset = random.random() % self.INTERVAL_OFFSET
-                interval = (
-                    next_prime(int((self.interval + interval_offset) * 1000)) / 1000
-                )
+    @property
+    def max_ramp_level(self) -> int:
+        return self._max_ramp_level
 
-                await anyio.sleep(interval)
-            else:
-                return False
-        else:
-            self._init_loop = True
-        return True
+    @max_ramp_level.setter
+    def max_ramp_level(self, value: int | float):
+        if not isinstance(value, (int, float)) or value < 1:
+            raise BarConfigError("'max_ramp_level' must be a number greater than 0")
+        self._max_ramp_level = value
 
-    def shutdown(self):
-        self.interval = -1
+    # Ramps
 
-    def stop(self):
-        raise WidgetTerminated()
+    def ramp_index(self, ramp_level: int) -> int | None:
+        """Maps `ramp_level` to an index in `self.ramp`."""
+        if ramp_level < 0 or not self.ramp:
+            return None
 
-    async def run_wrapper(self):
-        if not self.STATIC:
-            self.loop_token = anyio.lowlevel.current_token()
-            await self.run()
+        level = min(ramp_level, self.max_ramp_level - 1)
+        return int(level / (self.max_ramp_level / len(self.ramp)))
 
     def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
+        if (idx := self.ramp_index(ramp_level)) is None:
+            return None
+        return WidgetContent.parse(self.ramp[idx])
 
-        if ramp_level not in self.ramp_index_cache:
-            max_ramp_level = self.cfg.get("max_ramp_level", self.DEFAULT_RAMP_INDEX)
-            ramp = self.cfg.get("ramp")
+    # Content
 
-            content = None
+    def get_content(self, ramp_level: int = -1, **fields: Any) -> WidgetContent:
+        return self.format_content(ramp_level, fields)
 
-            if ramp_level >= 0 and ramp is not None and ramp:
-                level_ = min(ramp_level, max_ramp_level - 1)
-                idx = int(level_ / (max_ramp_level / len(ramp)))
-                content = WidgetContent.parse(ramp[idx])
+    def format_content(self, ramp_level: int, fields: dict[str, Any]) -> WidgetContent:
+        """Formats the label using `fields` and picks the ramp entry for
+        `ramp_level`, the `ramp` field is set to the ramp entry label."""
+        base = self.content
+        ramp = self.get_ramp(ramp_level)
 
-            self.ramp_index_cache[ramp_level] = content
-        return self.ramp_index_cache[ramp_level]
+        icon = base.icon
+        tooltip = base.tooltip_text
+        icon_classes = base.icon_classes
+        label_classes = base.label_classes
+        widget_classes = base.widget_classes
 
-    def _idle_run(self, func: Callable, *args: Any) -> bool:
-        func(*args)
-        return GLib.SOURCE_REMOVE
+        if ramp is not None:
+            fields = {"ramp": ramp.label} | fields
 
-    def idle_add(self, func: Callable, *args: Any):
-        GLib.idle_add(self._idle_run, func, *args)
+            if ramp.icon is not None:
+                icon = ramp.icon
+            if ramp.tooltip_text is not None:
+                tooltip = ramp.tooltip_text
+            if ramp.icon_classes is not None:
+                icon_classes = ramp.icon_classes
+            if ramp.label_classes is not None:
+                label_classes = ramp.label_classes
+            if ramp.widget_classes is not None:
+                widget_classes = ramp.widget_classes
 
-    def _idle_run_cb(self, func: Callable, cb: Callable) -> bool:
-        func()
-        if cb is not None:
-            self.elt_run_sync(cb)
-        return GLib.SOURCE_REMOVE
+        label = self.formatter.vformat(base.label, (), fields).strip()
 
-    def idle_add_cb(self, func: Callable, cb: Callable):
-        GLib.idle_add(self._idle_run_cb, func, cb)
+        if tooltip is not None:
+            tooltip = self.formatter.vformat(tooltip, (), fields).strip() or None
 
-    def _add_css_classes(self, widget: Gtk.Widget, names: set[str]):
-        for class_name in names:
-            widget.add_css_class(class_name)
-
-    def _add_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
-        func: Callable | None = None
-        callback: ... = None
-
-        if names and "!none" not in names and not names.issubset(store):
-            func = partial(self._add_css_classes, widget, names)
-            callback = partial(store.update, names)
-
-        if func is not None:
-            self.idle_add_cb(func, callback)
-
-    def _rm_css_classes(self, widget: Gtk.Widget, names: set[str]):
-        for class_name in names:
-            widget.remove_css_class(class_name)
-
-    def _rm_css_classes_i(self, widget: Gtk.Widget, names: set[str], store: set[str]):
-        func: Callable | None = None
-        callback: ... = None
-        if not names or "!none" in names:
-            if store:
-                func = partial(self._rm_css_classes, widget, store)
-                callback = store.clear
-        else:
-            func = partial(self._rm_css_classes, widget, names)
-            callback = partial(store.difference_update, names)
-
-        if func is not None:
-            self.idle_add_cb(func, callback)
-
-    def add_icon_css_classes_i(self, names: set[str]):
-        self._add_css_classes_i(self.icon, names, self._last_icon_css_classes)
-
-    def remove_icon_css_classes_i(self, names: set[str] | None = None):
-        self._rm_css_classes_i(self.icon, names, self._last_icon_css_classes)
-
-    def replace_icon_css_classes_i(self, names: set[str]):
-        if names and not names.issubset(self._last_icon_css_classes):
-            self.remove_icon_css_classes_i(names)
-            self.add_icon_css_classes_i(names)
-
-    def add_label_css_classes_i(self, names: set[str]):
-        self._add_css_classes_i(self.label, names, self._last_label_css_classes)
-
-    def remove_label_css_classes_i(self, names: set[str] | None = None):
-        self._rm_css_classes_i(self.label, names, self._last_label_css_classes)
-
-    def replace_label_css_classes_i(self, names: set[str]):
-        if names and not names.issubset(self._last_label_css_classes):
-            self.remove_label_css_classes_i(names)
-            self.add_label_css_classes_i(names)
-
-    def add_css_classes_i(self, names: set[str]):
-        self._add_css_classes_i(self, names, self._last_css_classes)
-
-    def remove_css_classes_i(self, names: set[str] | None = None):
-        self._rm_css_classes_i(self, names, self._last_css_classes)
-
-    def replace_css_classes_i(self, names: set[str]):
-        if names and not names.issubset(self._last_css_classes):
-            self.remove_css_classes_i(names)
-            self.add_css_classes_i(names)
-
-    def _set_content_i(
-        self, content: WidgetContent | None, ramp_level: int = -1, **kwargs: str
-    ):
-
-        if content is None:
-            content = self.get_content(ramp_level, **kwargs)
-
-        if content != self._last_content:
-            if content.icon is not None:
-                self.set_icon_i(content.icon)
-
-            if content.label is not None:
-                self.set_label_i(content.label)
-
-            if content.widget_classes:
-                self.replace_css_classes_i(content.widget_classes)
-
-            if content.label_classes:
-                self.replace_label_css_classes_i(content.label_classes)
-
-            if content.icon_classes:
-                self.replace_icon_css_classes_i(content.icon_classes)
-
-    set_content_i = partialmethod(_set_content_i, Placeholder, -1)
-
-    set_new_content_i = partialmethod(_set_content_i, None)
-
-    def set_icon(self, name: str | None):
-        if name is not None and name != self._last_icon:
-            self._last_icon = name
-            paintable = self.res_mgr.get_paintable(name)
-            self.icon.set_from_paintable(paintable)
-
-    def set_icon_i(self, name: str):
-        self.idle_add(self.set_icon, name)
-
-    def get_content(self, ramp_level: int = -1, **kwargs: str) -> WidgetContent:
-
-        icon = None
-        icon_classes = None
-        label_classes = None
-        widget_classes = None
-
-        if (ramp_content := self.get_ramp(ramp_level)) is not None:
-            icon = ramp_content.icon
-            icon_classes = ramp_content.icon_classes
-
-            if self.content.label is not None:
-                kwargs["ramp"] = ramp_content.label
-
-            icon_classes = ramp_content.icon_classes
-            label_classes = ramp_content.label_classes
-            widget_classes = ramp_content.widget_classes
-
-        label_text = self.formatter.vformat(self.content.label, None, kwargs)
-        tooltip_text = self.formatter.vformat(self.content.label, None, kwargs)
-
-        return self.content.derive(
+        return WidgetContent(
             icon,
-            None,
-            label_text,
-            tooltip_text,
+            base.icon_position,
+            label,
+            tooltip,
             icon_classes,
             label_classes,
             widget_classes,
         )
 
-    def _onclick(self, button: int, action: ActionInterface):
-        if button >= 0 and action is not None:
-            controller = GestureMouseClick()
-            controller.set_button(button)
-            controller.connect("pressed", lambda *args: action.run())
-            self.add_controller(controller)
+    def set_new_content_i(self, ramp_level: int = -1, **fields: Any):
+        """Formats the label using `fields`, picks the ramp for `ramp_level`
+        and schedules the widget update."""
+        self.set_content_i(self.format_content(ramp_level, fields))
 
-    def _onscroll(self, action_up: ActionInterface, action_down: ActionInterface):
+    def set_content_i(self, content: WidgetContent):
+        """Schedules the widget update. Updates are coalesced: if GTK main
+        thread did not catch up yet, only the latest content is shown."""
+        self._updater.submit(content)
 
-        def _scroll(x: float, dx: float, dy: float):
-            if dy > 0:
-                action_up.run()
-            else:
-                action_down.run()
+    def set_text_i(self, text: str):
+        """Shows `text` as is, it may contain an icon specification."""
+        self.set_content_i(WidgetContent.parse(text))
 
-        if action_up is not None and action_down is not None:
-            controller = Gtk.EventControllerScroll.new(
-                Gtk.EventControllerScrollFlags.VERTICAL
-            )
-            controller.connect("scroll", _scroll)
-            self.add_controller(controller)
+    def _sync_css_classes(self, widget: Gtk.Widget, classes: frozenset[str] | None):
+        wanted = frozenset() if classes is None else classes - {"!none"}
+        shown = self._shown_classes[widget]
 
-    def set_visible_i(self, state: bool):
-        self.idle_add(self.set_visible, state)
+        if wanted != shown:
+            for class_name in shown - wanted:
+                widget.remove_css_class(class_name)
+            for class_name in wanted - shown:
+                widget.add_css_class(class_name)
+            self._shown_classes[widget] = wanted
 
-    def set_label_i(self, text: str):
-        if text != self._last_label_text:
-            self._last_label_text = text
-            self.idle_add(self.set_label, text)
+    def apply_content(self, content: WidgetContent):
+        """Updates GTK widgets, must be called from GTK main thread."""
 
-    def onclick_call(self, button: int, func: Callable, *args, **kwargs):
-        self._onclick(button, CallableAction(func, *args, **kwargs))
+        if content.icon is not None and content.icon != self._shown_icon:
+            self._shown_icon = content.icon
+            self.icon.set_from_paintable(self.res_mgr.get_paintable(content.icon))
 
-    def onclick_exec(self, button: int, cmdline: str | list[str]):
-        self._onclick(button, ExecAction(cmdline))
+        if content.label is not None and content.label != self._shown_label:
+            self._shown_label = content.label
+            self.label.set_label(content.label)
 
-    def onscroll_call(self, func_up: Callable, func_down: Callable):
-        self._onscroll(CallableAction(func_up), CallableAction(func_down))
+        if content.tooltip_text != self._shown_tooltip:
+            self._shown_tooltip = content.tooltip_text
+            self.set_tooltip_text(content.tooltip_text)
 
-    def onscroll_exec(self, cmdline_up: str | list[str], cmdline_down: str | list[str]):
-        self._onscroll(ExecAction(cmdline_up), ExecAction(cmdline_down))
-
-    def elt_run_sync(self, func: Callable, *args):
-        anyio.from_thread.run_sync(func, *args, token=self.loop_token)
-
-    def elt_run(self, coro: Coroutine, *args):
-        anyio.from_thread.run(coro, *args, token=self.loop_token)
+        self._sync_css_classes(self, content.widget_classes)
+        self._sync_css_classes(self.label, content.label_classes)
+        self._sync_css_classes(self.icon, content.icon_classes)

@@ -3,32 +3,25 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import anyio
-import psutil
-from gi.repository import Gio
+from gi.repository import GLib  # type: ignore
 
-from mehbar._internals import DBusFacade
-from mehbar.exceptions import BarConfigError, CapabilityError
+from mehbar.exceptions import BarConfigError
+from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
+from ._dbus_facade import DBusFacade, is_null_path
 
-@enum.verify(enum.NAMED_FLAGS)
+
 class WiredOptions(enum.Flag):
-    NONE = enum.auto()
+    NONE = 0
     HWADDR = enum.auto()
     NAME = enum.auto()
     IPV4 = enum.auto()
     IPV6 = enum.auto()
 
     @classmethod
-    def for_name(cls, name: str):
-
-        ret = cls.NONE
-
-        for member in cls:
-            if member.name.casefold() == name.casefold():
-                ret = member
-                break
-        return ret
+    def for_name(cls, name: str) -> "WiredOptions":
+        return cls.__members__.get(name.upper(), cls.NONE)
 
 
 @dataclass
@@ -42,20 +35,21 @@ class WiredInfo:
     ipv6: str | None = field(default=None)
 
 
-def fill_missing_r(info: WiredInfo, options: WiredOptions):
+def fill_missing(info: WiredInfo, options: WiredOptions) -> WiredInfo:
+    from psutil import net_if_addrs
 
     get_hwaddr = WiredOptions.HWADDR in options and info.hwaddr is None
     get_ipv4 = WiredOptions.IPV4 in options and info.ipv4 is None
     get_ipv6 = WiredOptions.IPV6 in options and info.ipv6 is None
 
-    if get_hwaddr or get_ipv4 or get_ipv6:
-        iface_info = psutil.net_if_addrs().get(info.iface, [])
-        for snic in iface_info:
+    if info.iface is not None and (get_hwaddr or get_ipv4 or get_ipv6):
+        for snic in net_if_addrs().get(info.iface, []):
             if get_ipv4 and snic.family.name == "AF_INET":
                 info.ipv4 = snic.address
             elif get_ipv6 and snic.family.name == "AF_INET6":
                 if snic.address:
-                    info.ipv6 = snic.address.rstrip("%" + info.iface)
+                    # strip the zone index of link-local addresses
+                    info.ipv6 = snic.address.split("%", 1)[0]
             elif get_hwaddr and snic.family.name in ["AF_LINK", "AF_PACKET"]:
                 if snic.address is not None:
                     info.hwaddr = snic.address.upper()
@@ -64,14 +58,14 @@ def fill_missing_r(info: WiredInfo, options: WiredOptions):
 
 
 class WiredInfoQuery:
-    async def get_info_(self, iface: str, options: WiredOptions):
+    """Backends are synchronous, call `get_info()` in a worker thread."""
+
+    def get_info_(self, iface: str, options: WiredOptions) -> WiredInfo:
         raise NotImplementedError()
 
-    async def get_info(self, iface: str, options: WiredOptions):
-
-        info = await self.get_info_(iface, options)
-
-        return fill_missing_r(info, options)
+    def get_info(self, iface: str, options: WiredOptions) -> WiredInfo:
+        info = self.get_info_(iface, options)
+        return fill_missing(info, options) if info.connected else info
 
 
 class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
@@ -80,117 +74,80 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
     BASE_IFACE = "org.freedesktop.NetworkManager"
 
     ACT_CONN_IFACE = "org.freedesktop.NetworkManager.Connection.Active"
-    AP_IFACE = "org.freedesktop.NetworkManager.AccessPoint"
-    CONN_IFACE = "org.freedesktop.NetworkManager.Settings.Connection"
     DEV_IFACE = "org.freedesktop.NetworkManager.Device"
-    DEV_WL_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
-    SETTINGS_IFACE = "org.freedesktop.NetworkManager.Settings"
-    SETTINGS_OBJ = "/org/freedesktop/NetworkManager/Settings"
 
-    async def p_get_ipaddr_async(self, proxy: Gio.DBusProxy, ip_ver: int) -> str:
+    # NMDeviceState
+    STATE_DISCONNECTED = 30
+    STATE_ACTIVATED = 100
 
-        ret = None
+    def get_ipaddr(self, cfg_obj: str | None, ip_ver: int) -> str | None:
+        if is_null_path(cfg_obj):
+            return None
 
-        addr_cfg_obj = self.p_get_prop(proxy, f"Ip{ip_ver}Config")
-        addr_data = await self.get_prop_async(
-            self.BASE_IFACE + f".IP{ip_ver}Config", addr_cfg_obj, "AddressData"
+        addr_data = self.get_prop(
+            cfg_obj, f"{self.BASE_IFACE}.IP{ip_ver}Config", "AddressData"
         )
-        if addr_data is not None:
-            ret = addr_data[0]["address"]
-        return ret
+        return addr_data[0]["address"] if addr_data else None
 
-    async def get_info_(self, iface: str, options: WiredOptions):
+    def get_info_(self, iface: str, options: WiredOptions) -> WiredInfo:
+        (dev_obj,) = self.call(
+            self.BASE_OBJ,
+            self.BASE_IFACE,
+            "GetDeviceByIpIface",
+            GLib.Variant("(s)", (iface,)),
+            "(o)",
+        )
 
-        hwaddr = None
-        ipv4 = None
-        ipv6 = None
-        security = None
-        ssid = None
-        pcnt = None
+        dev_props = self.get_all_props(dev_obj, self.DEV_IFACE)
+        state = dev_props.get("State", 0)
 
-        dev_prop = await self.get_prop_async(self.BASE_IFACE, self.BASE_OBJ, "Devices")
+        info = WiredInfo(
+            iface,
+            None,
+            state >= self.STATE_DISCONNECTED,
+            state == self.STATE_ACTIVATED,
+        )
 
-        if dev_prop is None or not dev_prop:
-            raise RuntimeError("NetworkManager: no devices available")
+        if not info.connected:
+            return info
 
-        for dev_obj in dev_prop:
-            dev_proxy = await self.p_new_async(self.DEV_IFACE, dev_obj)
+        if WiredOptions.HWADDR in options:
+            info.hwaddr = dev_props.get("HwAddress")
 
-            if self.p_get_prop(dev_proxy, "Interface") == iface:
-                if WiredOptions.HWADDR in options:
-                    hwaddr = self.p_get_prop(dev_proxy, "HwAddress")
+        if WiredOptions.IPV4 in options:
+            info.ipv4 = self.get_ipaddr(dev_props.get("Ip4Config"), 4)
 
-                if WiredOptions.SIGNAL & options:
-                    ap_obj = await self.get_prop_async(
-                        self.DEV_WL_IFACE, dev_obj, "ActiveAccessPoint"
-                    )
-                    pcnt = await self.get_prop_async(self.AP_IFACE, ap_obj, "Strength")
+        if WiredOptions.IPV6 in options:
+            info.ipv6 = self.get_ipaddr(dev_props.get("Ip6Config"), 6)
 
-                o_act_conn = self.p_get_prop(dev_proxy, "ActiveConnection")
+        if WiredOptions.NAME in options:
+            act_conn_obj = dev_props.get("ActiveConnection")
+            if not is_null_path(act_conn_obj):
+                info.name = self.get_prop(act_conn_obj, self.ACT_CONN_IFACE, "Id")
 
-                if o_act_conn is not None:
-                    p_act_conn = await self.p_new_async(self.ACT_CONN_IFACE, o_act_conn)
-
-                    conn_type = self.p_get_prop(p_act_conn, "Type")
-
-                    if conn_type == "802-11-wireless":
-                        if WiredOptions.IPV4 in options:
-                            ipv4 = await self.p_get_ipaddr_async(p_act_conn, 4)
-
-                        if WiredOptions.IPV6 in options:
-                            ipv6 = await self.p_get_ipaddr_async(p_act_conn, 6)
-
-                        o_conn = self.p_get_prop(p_act_conn, "Connection")
-
-                        if (WiredOptions.SSID | WiredOptions.SECURITY) & options:
-                            if o_conn is not None:
-                                method = self.CONN_IFACE + ".GetSettings"
-
-                                result = await self.new_call_async(
-                                    self.CONN_IFACE, o_conn, method
-                                )
-
-                                if (wlan := result.get("802-11-wireless")) is not None:
-                                    if WiredOptions.SSID in options:
-                                        _ssid = "".join(
-                                            chr(c) for c in wlan.get("ssid", [])
-                                        )
-                                        if _ssid:
-                                            ssid = _ssid
-
-                                    if WiredOptions.SECURITY in options:
-                                        sec_type = wlan.get("security")
-                                        if sec_type is not None:
-                                            if (
-                                                sec := result.get(sec_type)
-                                            ) is not None:
-                                                if _sec := sec.get("key-mgmt"):
-                                                    security = _sec.upper()
-                break
-
-        return WiredInfo(iface, ssid, None, pcnt, hwaddr, security, ipv4, ipv6)
+        return info
 
 
 class UnmanagedBackend(WiredInfoQuery):
-    def __init__(self, *_):
-        pass
+    PATH_NET = Path("/sys/class/net")
 
-    async def get_info_(self, iface: str, options: WiredOptions):
+    @staticmethod
+    def _read(path: Path) -> str | None:
+        try:
+            return path.read_text().strip()
+        except OSError:  # e.g. 'carrier' cannot be read while the link is down
+            return None
 
-        base_path = Path(f"/sys/class/net/{iface}")
+    def get_info_(self, iface: str, options: WiredOptions) -> WiredInfo:
+        base_path = self.PATH_NET / iface
 
-        pwrd = False
-        connd = False
+        if not base_path.is_dir():
+            raise FileNotFoundError(f"no such network interface: {iface}")
 
-        async with await anyio.open_file(base_path / "operstate", "r") as fhandle:
-            if (await fhandle.readline()).strip() == "up":
-                pwrd = True
+        pwrd = self._read(base_path / "operstate") == "up"
+        connd = self._read(base_path / "carrier") == "1"
 
-        async with await anyio.open_file(base_path / "carrier", "r") as fhandle:
-            if (await fhandle.readline()).strip() == "1":
-                connd = True
-
-        return WiredInfo(iface, None, pwrd, connd)
+        return WiredInfo(iface, None, pwrd, pwrd and connd)
 
 
 class ConnManBackend(DBusFacade, WiredInfoQuery):
@@ -201,114 +158,116 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
     TECH_OBJ = "/net/connman/technology/ethernet"
     TECH_IFACE = "net.connman.Technology"
 
-    async def get_info_(self, iface: str, options: WiredOptions):
-
-        hwaddr = None
-        ipv4 = None
-        name = None
-        ipv6 = None
-        ready = False
-
-        tech_props = await self.new_call_async(
-            self.TECH_IFACE, self.TECH_OBJ, "GetProperties"
+    def get_info_(self, iface: str, options: WiredOptions) -> WiredInfo:
+        (tech_props,) = self.call(
+            self.TECH_OBJ, self.TECH_IFACE, "GetProperties", None, "(a{sv})"
         )
 
-        connd = tech_props.get("Connected", False)
-        pwrd = tech_props.get("Powered", False)
-
-        services = await self.new_call_async(
-            self.BASE_IFACE, self.BASE_OBJ, "GetServices"
+        info = WiredInfo(
+            iface,
+            None,
+            tech_props.get("Powered", False),
+            tech_props.get("Connected", False),
         )
 
-        if pwrd:
-            if services is None or not services:
-                raise CapabilityError("no 'connman' services found")
+        if not info.powered:
+            return info
 
-            for _, svc in services:
-                if svc.get("Type") == "ethernet" and svc.get("State") == "ready":
-                    ready &= True
-                    if eth_obj := svc.get("Ethernet"):
-                        if eth_obj.get("Interface") == iface:
-                            if WiredOptions.NAME in options:
-                                name = svc.get("Name")
+        (services,) = self.call(
+            self.BASE_OBJ, self.BASE_IFACE, "GetServices", None, "(a(oa{sv}))"
+        )
 
-                            if WiredOptions.HWADDR in options:
-                                hwaddr = eth_obj.get("Address")
+        info.connected = False
 
-                            if WiredOptions.IPV4 in options:
-                                if ipv4_obj := svc.get("IPv4"):
-                                    ipv4 = ipv4_obj.get("Address")
+        for _, svc in services:
+            if svc.get("Type") != "ethernet" or svc.get("State") not in (
+                "ready",
+                "online",
+            ):
+                continue
 
-                            if WiredOptions.IPV6 in options:
-                                if ipv6_obj := svc.get("IPv6"):
-                                    ipv6 = ipv6_obj.get("Address")
+            if not (eth_obj := svc.get("Ethernet")) or eth_obj.get("Interface") != iface:
+                continue
 
-                            break
+            info.connected = True
 
-        return WiredInfo(iface, name, pwrd, connd, hwaddr, ipv4, ipv6)
+            if WiredOptions.NAME in options:
+                info.name = svc.get("Name")
+
+            if WiredOptions.HWADDR in options:
+                info.hwaddr = eth_obj.get("Address")
+
+            if WiredOptions.IPV4 in options:
+                if ipv4_obj := svc.get("IPv4"):
+                    info.ipv4 = ipv4_obj.get("Address")
+
+            if WiredOptions.IPV6 in options:
+                if ipv6_obj := svc.get("IPv6"):
+                    info.ipv6 = ipv6_obj.get("Address")
+            break
+
+        return info
 
 
 class WidgetWired(WidgetBase):
+    """Shows the state of a wired network interface. Ramp entries are for
+    the state: down, no link, connected."""
+
     TYPE = "wired"
+    UNIQUE = False
+
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,
         "connman": ConnManBackend,
         "unmanaged": UnmanagedBackend,
     }
 
-    FMT_FIELDS = ["ipv4", "ipv6", "hwaddr", "ramp"]
+    FMT_FIELDS = ["ipv4", "ipv6", "hwaddr", "name", "iface", "ramp"]
 
-    def __init__(
-        self,
-        interval: int,
-        iface: str,
-        backend: str,
-        label_format: str,
-        ramp: list[str] | None = None,
-    ):
-        super().__init__(interval, label_format, ramp)
+    def __init__(self, name: str, res_mgr: ResourceManager):
+        super().__init__(name, res_mgr)
+
+        backend = self.cfg.get("backend", "unmanaged")
 
         if backend not in self.BACKEND_MAP:
-            raise BarConfigError(f"unknown backend: {backend}")
+            backends = ", ".join(repr(b) for b in self.BACKEND_MAP)
+            raise BarConfigError(f"unknown backend '{backend}', not one of: {backends}")
 
-        self.dbus_iface = self.BACKEND_MAP[backend](None)
+        self.backend = self.BACKEND_MAP[backend]()
+
+        if not isinstance(iface := self.cfg.get("iface"), str) or not iface:
+            raise BarConfigError("'iface' must be specified")
 
         self.iface = iface
-        self.ramps = []
-        if ramp is not None:
-            self.ramps = ramp[:3]
-
-        self.ramps.extend([None] * (3 - len(self.ramps)))
 
         self.qry_options = WiredOptions.NONE
 
-        fld_cnt = 0
-
-        for fld in set(self.formatter.get_fields(label_format)):
-            if fld in self.FMT_FIELDS:
-                fld_cnt += 1
-                opt = WiredOptions.for_name(fld)
-
-                if opt is not WiredOptions.NONE:
-                    self.qry_options |= opt
-            else:
+        for fld in set(self.formatter.get_fields(self.content.label)):
+            if fld not in self.FMT_FIELDS:
                 raise BarConfigError(f"unknown label field: {fld}")
+            self.qry_options |= WiredOptions.for_name(fld)
 
-        if fld_cnt == 0:
-            raise BarConfigError("no known format fields for label")
+    def ramp_index(self, ramp_level: int) -> int | None:
+        if ramp_level < 0 or not self.ramp:
+            return None
+        return min(ramp_level, len(self.ramp) - 1)
 
     async def run(self):
+        last_info = None
 
         while await self.sleep_interval():
-            info = await self.dbus_iface.get_info(self.iface, self.qry_options)
-            ramp = None
+            info = await anyio.to_thread.run_sync(
+                self.backend.get_info, self.iface, self.qry_options
+            )
 
-            if self.ramps:
-                if info.connected and info.powered:
-                    ramp = self.ramps[2]
-                elif not info.connected:
-                    ramp = self.ramps[1]
+            if info != last_info:
+                last_info = info
+
+                if info.connected:
+                    ramp_level = 2
+                elif info.powered:
+                    ramp_level = 1
                 else:
-                    ramp = self.ramps[0]
+                    ramp_level = 0
 
-            self.format_label_idle(ramp=ramp, **asdict(info))
+                self.set_new_content_i(ramp_level, **asdict(info))

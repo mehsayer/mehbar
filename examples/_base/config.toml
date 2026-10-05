@@ -1,129 +1,187 @@
 [bar]
 height = 32
-icon_size = 24
+icon_size = 20
 layer = "top"
 homogenous = true
-threaded = false
 position = "bottom"
-gaps = [8,8,8,8]
+gaps = [8, 8, 8, 8]
 
+# Phosphor icons, https://phosphoricons.com (MIT license, see icons/LICENSE).
+# Any of these names can be used in labels and ramps, e.g. "[icon=cpu;]".
 [preload-icons]
-# cpu = "icontheme://input-tablet"
-#
-cpu = "file:///home/meh/cpu-symbolic.svg"
+# temperature
+thermometer-cold = "theme://thermometer-cold-symbolic.svg"
+thermometer-simple = "theme://thermometer-simple-symbolic.svg"
+thermometer-hot = "theme://thermometer-hot-symbolic.svg"
+# cpu_usage, cpu_fq, memory_usage, disk_usage, fan_speed
+cpu = "theme://cpu-symbolic.svg"
+gauge = "theme://gauge-symbolic.svg"
 memory = "theme://memory-symbolic.svg"
-therm = "theme://temp-symbolic.svg"
-wifi0 = "icontheme://network-wireless-offline-symbolic"
-wifi1 = "icontheme://network-wireless-signal-weak-symbolic"
-wifi2 = "icontheme://network-wireless-signal-ok-symbolic"
-wifi3 = "icontheme://network-wireless-signal-excellent-symbolic"
-clock1 = "theme://clock-1-symbolic.svg"
-clock2 = "theme://clock-2-symbolic.svg"
-clock3 = "theme://clock-3-symbolic.svg"
-clock4 = "theme://clock-4-symbolic.svg"
-clock5 = "theme://clock-5-symbolic.svg"
-clock6 = "theme://clock-6-symbolic.svg"
-clock7 = "theme://clock-7-symbolic.svg"
-clock8 = "theme://clock-8-symbolic.svg"
-clock9 = "theme://clock-9-symbolic.svg"
-clock10 = "theme://clock-10-symbolic.svg"
-clock11 = "theme://clock-11-symbolic.svg"
-clock12 = "theme://clock-12-symbolic.svg"
+hard-drives = "theme://hard-drives-symbolic.svg"
+fan = "theme://fan-symbolic.svg"
+# battery
+battery-warning = "theme://battery-warning-symbolic.svg"
+battery-low = "theme://battery-low-symbolic.svg"
+battery-medium = "theme://battery-medium-symbolic.svg"
+battery-high = "theme://battery-high-symbolic.svg"
+battery-full = "theme://battery-full-symbolic.svg"
+battery-charging = "theme://battery-charging-symbolic.svg"
+# backlight
+sun-horizon = "theme://sun-horizon-symbolic.svg"
+sun-dim = "theme://sun-dim-symbolic.svg"
+sun = "theme://sun-symbolic.svg"
+# datetime
+moon = "theme://moon-symbolic.svg"
+moon-stars = "theme://moon-stars-symbolic.svg"
+# bluetooth-status
+bluetooth-slash = "theme://bluetooth-slash-symbolic.svg"
+bluetooth = "theme://bluetooth-symbolic.svg"
+bluetooth-connected = "theme://bluetooth-connected-symbolic.svg"
+# pulse_volume
+speaker-x = "theme://speaker-x-symbolic.svg"
+speaker-none = "theme://speaker-none-symbolic.svg"
+speaker-low = "theme://speaker-low-symbolic.svg"
+speaker-high = "theme://speaker-high-symbolic.svg"
+# wifi
+wifi-slash = "theme://wifi-slash-symbolic.svg"
+wifi-none = "theme://wifi-none-symbolic.svg"
+wifi-low = "theme://wifi-low-symbolic.svg"
+wifi-medium = "theme://wifi-medium-symbolic.svg"
+wifi-high = "theme://wifi-high-symbolic.svg"
+# wired, network_rate
+network-slash = "theme://network-slash-symbolic.svg"
+network-x = "theme://network-x-symbolic.svg"
+network = "theme://network-symbolic.svg"
+arrows-down-up = "theme://arrows-down-up-symbolic.svg"
+# i3_kblayout, i3_mode, i3_window, i3_scratchpad
+keyboard = "theme://keyboard-symbolic.svg"
+command = "theme://command-symbolic.svg"
+app-window = "theme://app-window-symbolic.svg"
+stack = "theme://stack-symbolic.svg"
+# i3_workspaces
+circle-dashed = "theme://circle-dashed-symbolic.svg"
+circle = "theme://circle-symbolic.svg"
+circle-fill = "theme://circle-fill-symbolic.svg"
+warning-circle = "theme://warning-circle-symbolic.svg"
+# playerctl
+skip-back = "theme://skip-back-symbolic.svg"
+skip-forward = "theme://skip-forward-symbolic.svg"
+rewind = "theme://rewind-symbolic.svg"
+fast-forward = "theme://fast-forward-symbolic.svg"
+play = "theme://play-symbolic.svg"
+pause = "theme://pause-symbolic.svg"
+shuffle = "theme://shuffle-symbolic.svg"
+queue = "theme://queue-symbolic.svg"
+music-note = "theme://music-note-symbolic.svg"
+timer = "theme://timer-symbolic.svg"
+# application, session, exec_*, file, static
+globe = "theme://globe-symbolic.svg"
+user = "theme://user-symbolic.svg"
+terminal-window = "theme://terminal-window-symbolic.svg"
+file-text = "theme://file-text-symbolic.svg"
+line-vertical = "theme://line-vertical-symbolic.svg"
 
 
 [start.temperature]
 interval = 3
 type = "temperature"
-# source = "none"
-label = "[icon=therm;]{ramp} {k10temp/Tctl}°C"
-
-
-[start.firefox]
-type = "application"
-app_id = "firefox.desktop"
-label = "[icon=!none;]"
-
-
-[start.tail]
-type = "exec_tail"
-cmdline = ["/home/meh/test.sh"]
-max_ramp_level = 5
+# cool, warm, hot
 ramp = [
-"X",
-"A",
-"B",
-"C",
-"D",
-"E"
+    "[icon=thermometer-cold;]",
+    "[icon=thermometer-simple;]",
+    "[icon=thermometer-hot;]",
 ]
-label = "lbl: {label}, {ramp} - {ramp_level}"
+label = "{k10temp/Tctl}°C"
+
+
+[start.browser]
+type = "application"
+# matched by name, Zen's desktop entry has a generated ID and no icon
+app_name = "Zen"
+label = "[icon=globe;]"
 
 
 [start.bluetooth]
 type = 'bluetooth-status'
 interval = 3
-label = "[icon=icontheme://bluetooth-symbolic;] BT {ramp}"
-ramp = ["OFF", "ON", "CONNECTED"]
+# off, on, connected
+ramp = [
+    "[icon=bluetooth-slash;]",
+    "[icon=bluetooth;]",
+    "[icon=bluetooth-connected;]",
+]
+label = "{alias}"
+
 
 [center.cpu]
 interval = 3
 type = "cpu_usage"
-
-label = "[icon=cpu;]{percent}%x"
+label = "[icon=cpu;]{percent}%"
 
 
 [center.memory]
 interval = 3
 type = "memory_usage"
-
 label = "[icon=memory;]{percent}%"
 
 
 [center.disk]
 interval = 3
 type = "disk_usage"
+label = "[icon=hard-drives;]{percent}%"
 
-label = "[icon=disk;]{percent}%"
 
 [center.cpu_fq]
 interval = 3
 type = "cpu_fq"
+label = "[icon=gauge;]{fq} GHz {percent}%"
 
-label = "[icon=cpu;]CPU {fq} GHz {percent}%"
 
-# Use phosphor icons https://phosphoricons.com/
-#
-#
-#
 [end.battery]
 type = "battery"
 interval = 3
-ramp = ["1/4", "1/4c", "2/4", "2/4c", "3/4", "3/4c", "4/4", "4/4c"]
-
-label = "BATTERY {ramp} {percent}% {timeleft}"
+# pairs of on battery, plugged in; from empty to full
+ramp = [
+    "[icon=battery-warning;]", "[icon=battery-charging;]",
+    "[icon=battery-low;]", "[icon=battery-charging;]",
+    "[icon=battery-medium;]", "[icon=battery-charging;]",
+    "[icon=battery-high;]", "[icon=battery-charging;]",
+    "[icon=battery-full;]", "[icon=battery-full;]",
+]
+label = "{percent}% {timeleft}"
 
 
 [end.vol]
 type = "pulse_volume"
-label = "{ramp} {percent}%"
+# muted, then from silent to loud
+ramp = [
+    "[icon=speaker-x;]",
+    "[icon=speaker-none;]",
+    "[icon=speaker-low;]",
+    "[icon=speaker-high;]",
+]
+label = "{percent}%"
 
-ramp = ["MUTE", "1/4", "2/4", "3/4", "4/4"]
 
 [end.wlan]
 type = "wifi"
 iface = "wlp9s0"
-ramp = [
-    "[icon=wifi0;]0",
-    "[icon=wifi1;]1",
-    "[icon=wifi2;]2",
-    "[icon=wifi3;]3",
-]
 backend = "iwd"
-label = "{ramp} {ssid} {percentage}%"
+interval = 5
+# no signal, then from weak to strong
+ramp = [
+    "[icon=wifi-slash;]",
+    "[icon=wifi-none;]",
+    "[icon=wifi-low;]",
+    "[icon=wifi-medium;]",
+    "[icon=wifi-high;]",
+]
+label = "{ssid} {percentage}%"
+
 
 [end.kboard]
 type = "i3_kblayout"
-label = "{layout}"
+label = "[icon=keyboard;]{layout}"
 
 [end.kboard.rewrite]
 "Ukr\\w+" = "UA"
@@ -133,4 +191,76 @@ label = "{layout}"
 [end.date]
 interval = 10
 type = "datetime"
-label = "[icon=theme://clock-12-symbolic.svg;]{datetime:%H:%M}"
+# time of day, three hours each
+ramp = [
+    "[icon=moon-stars;]",
+    "[icon=moon-stars;]",
+    "[icon=sun-horizon;]",
+    "[icon=sun;]",
+    "[icon=sun;]",
+    "[icon=sun;]",
+    "[icon=sun-horizon;]",
+    "[icon=moon;]",
+]
+label = "{datetime:%H:%M}"
+
+
+# Icons for other widgets, e.g.:
+#
+# [start.workspaces]
+# type = "i3_workspaces"
+# always_show = ["1", "2", "3"]
+# # empty, normal, focused, urgent
+# ramp = ["[icon=circle-dashed;]", "[icon=circle;]", "[icon=circle-fill;]", "[icon=warning-circle;]"]
+# label = "{name}"
+#
+# [start.mode]
+# type = "i3_mode"
+# always_show = false
+# label = "[icon=command;]{mode}"
+#
+# [start.window]
+# type = "i3_window"
+# max_width_chars = 40
+# label = "[icon=app-window;]{title}"
+#
+# [start.scratchpad]
+# type = "i3_scratchpad"
+# always_show = false
+# label = "[icon=stack;]{count}"
+#
+# [end.backlight]
+# type = "backlight"
+# driver = "acpi"
+# interval = 5
+# # dim, medium, bright
+# ramp = ["[icon=sun-horizon;]", "[icon=sun-dim;]", "[icon=sun;]"]
+# label = "{percent}%"
+#
+# [end.wired]
+# type = "wired"
+# iface = "eth0"
+# interval = 5
+# # down, no link, connected
+# ramp = ["[icon=network-slash;]", "[icon=network-x;]", "[icon=network;]"]
+# label = "{ipv4}"
+#
+# [end.net]
+# type = "network_rate"
+# interval = 2
+# label = "[icon=arrows-down-up;]{rate_rx}{unit_rx} {rate_tx}{unit_tx}"
+#
+# [end.fan]
+# type = "fan_speed"
+# interval = 5
+# label = "[icon=fan;]{rpm}"
+# path = "/sys/class/hwmon/hwmon0/fan1_input"
+#
+# [end.session]
+# type = "session"
+# label = "[icon=user;]{username}@{hostname}"
+#
+# [end.player]
+# # uses play, pause, skip-back, skip-forward, rewind, fast-forward, shuffle,
+# # queue, music-note and timer icons by default
+# type = "playerctl"

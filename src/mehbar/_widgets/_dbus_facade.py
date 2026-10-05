@@ -1,239 +1,99 @@
-from functools import partial
+from collections.abc import Callable
 from typing import Any
 
-import anyio
-from gi.repository import Gio, GLib
+from gi.repository import Gio, GLib  # type: ignore
 
 
 class DBusFacade:
-    FLAGS_NOSIG = (
-        Gio.DBusProxyFlags.DO_NOT_CONNECT_SIGNALS | Gio.DBusProxyFlags.DO_NOT_AUTO_START
-    )
-    FLAGS_NOSIG_NOPROP = (
-        Gio.DBusProxyFlags.DO_NOT_CONNECT_SIGNALS
-        | Gio.DBusProxyFlags.DO_NOT_AUTO_START
-        | Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES
-    )
-    CALL_TIMEOUT_MS = 500
+    """Thin synchronous D-Bus client for a single service.
 
-    DBUS_IFACE = "org.freedesktop.DBus"
-    DBUS_ROOT_OBJ = "/org/freedesktop/DBus"
+    Calls block, run them in a worker thread, e.g. with
+    `anyio.to_thread.run_sync()`. Signal callbacks are invoked on GTK main
+    thread."""
+
+    BUS_TYPE = Gio.BusType.SYSTEM
     BASE_SVC = "org.freedesktop.DBus"
+    CALL_TIMEOUT_MS = 1000
 
-    def __init__(self, bus: Gio.DBusConnection | None, svc: str | None = None):
-        if bus is None:
-            self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-        else:
-            self.bus = bus
+    PROPS_IFACE = "org.freedesktop.DBus.Properties"
+    OBJ_MANAGER_IFACE = "org.freedesktop.DBus.ObjectManager"
 
-        if svc is None:
-            self.svc = self.BASE_SVC
-        else:
-            self.svc = svc
+    def __init__(self, bus: Gio.DBusConnection | None = None, svc: str | None = None):
+        self._bus = bus
+        self.svc = svc or self.BASE_SVC
 
-        self._ensure_available()
+    @property
+    def bus(self) -> Gio.DBusConnection:
+        if self._bus is None:
+            self._bus = Gio.bus_get_sync(self.BUS_TYPE, None)
+        return self._bus
 
-    def signal_subscribe(self, *args, **kwargs):
-        self.bus.signal_subscribe(*args, **kwargs)
-
-    def signal_unsubscribe(self, subscription_id: int):
-        self.bus.signal_unsubscribe(subscription_id)
-
-    def _ensure_available(self):
-        proxy = Gio.DBusProxy.new_sync(
-            self.bus,
-            self.FLAGS_NOSIG_NOPROP,
-            None,
-            self.DBUS_IFACE,
-            self.DBUS_ROOT_OBJ,
-            self.DBUS_IFACE,
-            None,
-        )
-
-        result = proxy.call_sync(
-            "ListNames",
-            None,
-            Gio.DBusCallFlags.NO_AUTO_START,
-            self.CALL_TIMEOUT_MS,
-            None,
-        )
-
-        if self.svc not in result.unpack()[0]:
-            raise RuntimeError(f"name {self.svc} not available")
-
-    def p_new(
+    def call(
         self,
+        obj: str,
         iface: str,
-        obj: str | GLib.Variant,
-        flags: Gio.DBusCallFlags | None = None,
-    ) -> Gio.DBusProxy:
-
-        if isinstance(obj, GLib.Variant):
-            obj = obj.get_string()
-
-        _flags = self.FLAGS_NOSIG
-
-        if flags is not None:
-            _flags |= flags
-
-        return Gio.DBusProxy.new_sync(
-            self.bus, _flags, None, self.svc, obj, iface, None
-        )
-
-    async def p_new_async(
-        self,
-        iface: str,
-        obj: str | GLib.Variant,
-        flags: Gio.DBusProxyFlags | None = None,
-    ) -> Gio.DBusProxy:
-
-        if isinstance(obj, GLib.Variant):
-            obj = obj.get_string()
-
-        _flags = self.FLAGS_NOSIG
-
-        if flags is not None:
-            _flags |= flags
-
-        proxy_ready_event = anyio.Event()
-        proxy_exception = None
-        proxy = None
-
-        def _proxy_ready_cb(proxy_obj, result, *_):
-            try:
-                nonlocal proxy
-                proxy = proxy_obj.new_finish(result)
-            except GLib.Error as ex:
-                nonlocal proxy_exception
-                proxy_exception = ex
-            finally:
-                proxy_ready_event.set()
-
-        loop_token = anyio.lowlevel.current_token()
-
-        # Note, that the callback is run on main thread, so we need to
-        # schedule it to run on the thread running event loop
-        Gio.DBusProxy.new(
-            self.bus,
-            _flags,
-            None,
+        method: str,
+        args: GLib.Variant | None = None,
+        reply_type: str | None = None,
+    ) -> tuple:
+        """Calls the method, returns the unpacked reply tuple."""
+        reply = self.bus.call_sync(
             self.svc,
             obj,
             iface,
-            None,
-            partial(anyio.from_thread.run_sync, _proxy_ready_cb, token=loop_token),
-        )
-
-        await proxy_ready_event.wait()
-
-        if proxy_exception is not None:
-            raise proxy_exception
-
-        return proxy
-
-    def p_new_call(
-        self, proxy: Gio.DBusProxy, method: str, arg: GLib.Variant | str | None = None
-    ) -> Any:
-
-        if arg is not None and isinstance(arg, str):
-            arg = GLib.Variant("(s)", (arg,))
-
-        ret = proxy.call_sync(
-            method, arg, Gio.DBusCallFlags.NO_AUTO_START, self.CALL_TIMEOUT_MS, None
-        )
-
-        if ret is not None:
-            ret = ret.unpack()[0]
-
-        return ret
-
-    async def p_new_call_async(
-        self, proxy: Gio.DBusProxy, method: str, arg: GLib.Variant | str | None = None
-    ) -> Any:
-
-        if arg is not None and isinstance(arg, str):
-            arg = GLib.Variant("(s)", (arg,))
-
-        call_ready_event = anyio.Event()
-        call_result = None
-        call_exception = None
-
-        def _call_ready_cb(proxy_obj, result, *_):
-            try:
-                nonlocal call_result
-                call_result = proxy_obj.call_finish(result)
-            except GLib.Error as ex:
-                nonlocal call_exception
-                call_exception = ex
-            finally:
-                call_ready_event.set()
-
-        loop_token = anyio.lowlevel.current_token()
-
-        proxy.call(
             method,
-            arg,
+            args,
+            GLib.VariantType.new(reply_type) if reply_type else None,
             Gio.DBusCallFlags.NO_AUTO_START,
             self.CALL_TIMEOUT_MS,
             None,
-            partial(anyio.from_thread.run_sync, _call_ready_cb, token=loop_token),
+        )
+        return reply.unpack() if reply is not None else ()
+
+    def get_prop(self, obj: str, iface: str, prop: str) -> Any:
+        (value,) = self.call(
+            obj, self.PROPS_IFACE, "Get", GLib.Variant("(ss)", (iface, prop)), "(v)"
+        )
+        return value
+
+    def get_all_props(self, obj: str, iface: str) -> dict[str, Any]:
+        (props,) = self.call(
+            obj, self.PROPS_IFACE, "GetAll", GLib.Variant("(s)", (iface,)), "(a{sv})"
+        )
+        return props
+
+    def get_managed_objects(self, obj: str = "/") -> dict[str, dict[str, dict]]:
+        (objects,) = self.call(
+            obj, self.OBJ_MANAGER_IFACE, "GetManagedObjects", None, "(a{oa{sa{sv}}})"
+        )
+        return objects
+
+    def signal_subscribe(
+        self,
+        callback: Callable[[str, str, str, Any], None],
+        iface: str | None = None,
+        member: str | None = None,
+        obj: str | None = None,
+        arg0: str | None = None,
+    ) -> int:
+        """`callback(path, iface, member, args)` is invoked on GTK main thread."""
+
+        def _on_signal(_conn, _sender, path, iface_, member_, params):
+            callback(path, iface_, member_, params.unpack())
+
+        return self.bus.signal_subscribe(
+            self.svc,
+            iface,
+            member,
+            obj,
+            arg0,
+            Gio.DBusSignalFlags.NONE,
+            _on_signal,
         )
 
-        await call_ready_event.wait()
+    def signal_unsubscribe(self, sub_id: int):
+        self.bus.signal_unsubscribe(sub_id)
 
-        if call_exception is not None:
-            raise call_exception
 
-        ret = None
-
-        if call_result is not None:
-            ret = call_result.unpack()[0]
-
-        return ret
-
-    def new_call(
-        self,
-        iface: str,
-        obj: str | GLib.Variant,
-        method: str,
-        arg: GLib.Variant | str | None = None,
-    ) -> Any:
-        proxy = self.p_new(iface, obj)
-        return self.p_new_call(proxy, method, arg)
-
-    async def new_call_async(
-        self,
-        iface: str,
-        obj: str | GLib.Variant,
-        method: str,
-        arg: GLib.Variant | str | None = None,
-    ) -> Any:
-        proxy = await self.p_new_async(iface, obj)
-        return await self.p_new_call_async(proxy, method, arg)
-
-    def p_get_prop(self, proxy: Gio.DBusProxy, prop: str) -> Any:
-        ret = None
-        if (_ret := proxy.get_cached_property(prop)) is not None:
-            if isinstance(_ret, GLib.Variant):
-                ret = _ret.unpack()
-            else:
-                ret = _ret
-        return ret
-
-    def get_prop(self, iface: str, obj: GLib.Variant | str, prop: str) -> Any | None:
-        ret = None
-
-        if obj is not None:
-            proxy = self.p_new(iface, obj)
-            ret = self.p_get_prop(proxy, prop)
-        return ret
-
-    async def get_prop_async(
-        self, iface: str, obj: GLib.Variant | str, prop: str
-    ) -> Any | None:
-        ret = None
-
-        if obj is not None:
-            proxy = await self.p_new_async(iface, obj)
-            ret = self.p_get_prop(proxy, prop)
-        return ret
+def is_null_path(path: str | None) -> bool:
+    return not path or path == "/"
