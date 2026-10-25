@@ -8,6 +8,9 @@ gaps = [8, 8, 8, 8]
 
 # Phosphor icons, https://phosphoricons.com (MIT license, see icons/LICENSE).
 # Any of these names can be used in labels and ramps, e.g. "[icon=cpu;]".
+# Ramp entries may also set CSS classes, e.g. "[icon=cpu; classes=busy;]" or
+# "[classes:widget=busy, icon=hot;]", and a "{ramp}" field in the label places
+# the ramp icon, e.g. label = "{percent}% {ramp}".
 [preload-icons]
 # temperature
 thermometer-cold = "theme://thermometer-cold-symbolic.svg"
@@ -207,22 +210,22 @@ label = "{datetime:%H:%M}"
 
 # Icons for other widgets, e.g.:
 #
-# [start.workspaces]
-# type = "i3_workspaces"
-# always_show = ["1", "2", "3"]
-# # empty, normal, focused, urgent
-# ramp = ["[icon=circle-dashed;]", "[icon=circle;]", "[icon=circle-fill;]", "[icon=warning-circle;]"]
-# label = "{name}"
+[start.workspaces]
+type = "i3_workspaces"
+always_show = ["1", "2", "3"]
+# empty, normal, focused, urgent
+ramp = ["[icon=circle-dashed;]", "[icon=circle;]", "[icon=circle-fill;]", "[icon=warning-circle;]"]
+label = "{name}"
 #
-# [start.mode]
-# type = "i3_mode"
-# always_show = false
-# label = "[icon=command;]{mode}"
-#
-# [start.window]
-# type = "i3_window"
-# max_width_chars = 40
-# label = "[icon=app-window;]{title}"
+[start.mode]
+type = "i3_mode"
+always_show = false
+label = "[icon=command;]{mode}"
+
+[start.window]
+type = "i3_window"
+max_width_chars = 40
+label = "[icon=app-window;]{title}"
 #
 # [start.scratchpad]
 # type = "i3_scratchpad"

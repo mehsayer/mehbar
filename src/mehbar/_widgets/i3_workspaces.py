@@ -195,9 +195,7 @@ class WidgetI3Workspaces(RewriteMixin, BarWidget):
                 )
 
         # numbered workspaces first, like i3 does
-        ordered = sorted(
-            states.values(), key=lambda s: (s.num < 0, s.num, s.name)
-        )
+        ordered = sorted(states.values(), key=lambda s: (s.num < 0, s.num, s.name))
 
         if len(ordered) > self.max_workspaces:
             if not self._too_many_logged:

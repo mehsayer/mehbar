@@ -47,14 +47,16 @@ except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
+# The Vulkan renderer gains nothing on a bar, and the NVIDIA driver reports
+# VK_SUBOPTIMAL_KHR for the first frames of every new surface, which GTK logs
+os.environ.setdefault("GSK_RENDERER", "gl")
+
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
 from . import _widgets
 from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
 from .widget import BarWidget
-
-# GSK_RENDERER=cairo GDK_BACKEND=wayland
 
 
 def describe_exception(ex: BaseException) -> str:
@@ -112,6 +114,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.main_box.set_homogeneous(is_homogenous)
         self.main_box.set_valign(Gtk.Align.FILL)
         self.main_box.add_css_class("bar-horizontal")
+        self.main_box.add_css_class(f"bar-{self.position}")
 
         self.boxes: dict[str, Gtk.Box] = {}
 
@@ -139,7 +142,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
         position = bar_cfg.get("position", self.DEFAULT_ANCHOR)
         if (anchor := self.ANCHOR_MAP.get(position)) is None:
             logging.warning("unknown bar position '%s'", position)
-            anchor = self.ANCHOR_MAP[self.DEFAULT_ANCHOR]
+            position = self.DEFAULT_ANCHOR
+            anchor = self.ANCHOR_MAP[position]
+
+        self.position = position
 
         layer_name = bar_cfg.get("layer", self.DEFAULT_LAYER)
         if (layer := self.LAYER_MAP.get(layer_name)) is None:
@@ -196,7 +202,11 @@ class MehBarGUI(Gtk.ApplicationWindow):
             def _on_error(_provider, section, error, label=label):
                 loc = section.get_start_location()
                 logging.warning(
-                    "%s:%d:%d: %s", label, loc.lines + 1, loc.line_chars + 1, error.message
+                    "%s:%d:%d: %s",
+                    label,
+                    loc.lines + 1,
+                    loc.line_chars + 1,
+                    error.message,
                 )
 
             provider = Gtk.CssProvider()

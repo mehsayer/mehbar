@@ -21,12 +21,20 @@ box {
     padding-left: 0.5ex;
 }
 
+.bar-horizontal .bar-widget-icon-middle {
+    padding: 0 0.5ex;
+}
+
 .bar-vertical .bar-widget-icon-start {
     padding-bottom: 0.5ex;
 }
 
 .bar-vertical .bar-widget-icon-end {
     padding-top: 0.5ex;
+}
+
+.bar-vertical .bar-widget-icon-middle {
+    padding: 0.5ex 0;
 }
 
 #playerctl-previous,

@@ -1,0 +1,203 @@
+/*
+ * Tokyo Night, a muted take on the Night palette of
+ * https://github.com/folke/tokyonight.nvim (Apache-2.0).
+ *
+ * Enable it with `theme = "tokyo-night"` in the [bar] section of config.toml.
+ * The same look is used for both color schemes.
+ *
+ * Ramp entries may set the state classes defined at the end, e.g.
+ *     "[icon=battery-warning; classes=critical;]"
+ *     "[icon=speaker-x; classes=dim;]"
+ *     "[icon=thermometer-hot; classes:icon=warning;]"
+ */
+
+@define-color tn_bg #1a1b26;
+@define-color tn_bg_dark #16161e;
+@define-color tn_bg_highlight #292e42;
+@define-color tn_gutter #3b4261;
+@define-color tn_comment #565f89;
+@define-color tn_fg_dark #737aa2;
+@define-color tn_fg #a9b1d6;
+@define-color tn_fg_bright #c0caf5;
+@define-color tn_blue #7aa2f7;
+@define-color tn_cyan #7dcfff;
+@define-color tn_magenta #bb9af7;
+@define-color tn_green #9ece6a;
+@define-color tn_yellow #e0af68;
+@define-color tn_orange #ff9e64;
+@define-color tn_red #f7768e;
+
+/* blue, toned down to sit quietly next to the labels */
+@define-color tn_accent mix(@tn_blue, @tn_fg_dark, 0.45);
+
+
+/* Bar */
+
+window.background,
+box {
+    background: none;
+}
+
+.bar-horizontal {
+    background-color: alpha(@tn_bg, 0.94);
+}
+
+.bar-top {
+    box-shadow: inset 0 -1px @tn_bg_highlight;
+}
+
+.bar-bottom {
+    box-shadow: inset 0 1px @tn_bg_highlight;
+}
+
+#start {
+    padding-left: 4px;
+}
+
+#end {
+    padding-right: 4px;
+}
+
+
+/* Widgets */
+
+.bar-widget {
+    color: @tn_fg;
+    font-family: "JetBrains Mono", "Roboto Mono", monospace;
+    font-size: 10pt;
+    padding: 0 8px;
+}
+
+.bar-widget-icon {
+    color: @tn_accent;
+}
+
+.bar-horizontal .bar-widget-icon-start {
+    padding-right: 6px;
+}
+
+.bar-horizontal .bar-widget-icon-end {
+    padding-left: 6px;
+}
+
+.bar-horizontal .bar-widget-icon-middle {
+    padding: 0 6px;
+}
+
+.bar-widget.datetime {
+    color: @tn_fg_bright;
+}
+
+.bar-widget.i3_window {
+    color: @tn_fg_dark;
+}
+
+.bar-widget.i3_mode {
+    color: @tn_magenta;
+    background-color: alpha(@tn_magenta, 0.12);
+    border-radius: 5px;
+    padding: 2px 9px;
+    margin: 0 4px;
+}
+
+.bar-widget.i3_mode .bar-widget-icon {
+    color: inherit;
+}
+
+
+/* i3 / sway workspaces */
+
+.i3-workspace {
+    color: @tn_fg_dark;
+    padding: 2px 9px;
+    margin: 0 1px;
+    border-radius: 5px;
+    transition: color 120ms ease-out, background-color 120ms ease-out;
+}
+
+.i3-workspace .bar-widget-icon {
+    color: inherit;
+}
+
+.i3-workspace:hover {
+    background-color: alpha(@tn_bg_highlight, 0.6);
+}
+
+.i3-workspace.empty {
+    color: @tn_comment;
+}
+
+.i3-workspace.visible {
+    color: @tn_fg;
+}
+
+.i3-workspace.focused {
+    color: @tn_blue;
+    background-color: @tn_bg_highlight;
+}
+
+.i3-workspace.urgent {
+    color: @tn_red;
+    background-color: alpha(@tn_red, 0.12);
+}
+
+
+/* Media player */
+
+.playerctl-button {
+    color: @tn_fg_dark;
+}
+
+/* the base theme pads these by id */
+.playerctl-button,
+#playerctl-previous,
+#playerctl-play-pause,
+#playerctl-next {
+    padding: 0 6px;
+}
+
+.playerctl-button .bar-widget-icon {
+    color: inherit;
+}
+
+.playerctl-button:hover {
+    color: @tn_blue;
+}
+
+
+/* Tooltips */
+
+tooltip {
+    color: @tn_fg;
+    background-color: @tn_bg_dark;
+    border: 1px solid @tn_gutter;
+    border-radius: 6px;
+}
+
+
+/* State classes for ramps, on the widget, the label or the icon */
+
+.dim,
+.dim .bar-widget-icon {
+    color: @tn_comment;
+}
+
+.accent,
+.accent .bar-widget-icon {
+    color: @tn_blue;
+}
+
+.good,
+.good .bar-widget-icon {
+    color: @tn_green;
+}
+
+.warning,
+.warning .bar-widget-icon {
+    color: @tn_yellow;
+}
+
+.critical,
+.critical .bar-widget-icon {
+    color: @tn_red;
+}

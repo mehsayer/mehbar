@@ -147,6 +147,41 @@ def _parse_format(format_string: str) -> tuple[tuple[str, str | None, str, str],
     return tuple(string.Formatter().parse(format_string))
 
 
+def _join_format(items: Sequence[tuple[str, str | None, str, str]]) -> str:
+    out = []
+
+    for literal, field, spec, conv in items:
+        out.append(literal.replace("{", "{{").replace("}", "}}"))
+
+        if field is not None:
+            conv_ = f"!{conv}" if conv else ""
+            spec_ = f":{spec}" if spec else ""
+            out.append(f"{{{field}{conv_}{spec_}}}")
+
+    return "".join(out)
+
+
+def split_format(format_string: str | None, field: str) -> tuple[str, str, str] | None:
+    """Splits `format_string` around the first replacement field named
+    `field`, returns the text before it, the field itself and the text after
+    it, or `None` if there is no such field."""
+
+    if not format_string:
+        return None
+
+    items = _parse_format(format_string)
+
+    for idx, (literal, field_, spec, conv) in enumerate(items):
+        if field_ == field:
+            return (
+                _join_format((*items[:idx], (literal, None, "", ""))),
+                _join_format((("", field_, spec, conv),)),
+                _join_format(items[idx + 1 :]),
+            )
+
+    return None
+
+
 class OptionalFormatter(string.Formatter):
     """Like the default string formatter that you know and love, but silently
     renders missing and `None` fields as empty strings. Values that do not

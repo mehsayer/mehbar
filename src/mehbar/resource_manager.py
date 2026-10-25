@@ -256,12 +256,19 @@ class ResourceManager:
         return max(self.MIN_ICON_SIZE, pixel_size)
 
     def _load_resources(self):
-        base_res_path = resources.files("mehbar") / "assets" / self.BASE_RESOURCE_FILE
+        assets_dir = Path(str(resources.files("mehbar") / "assets"))
+        base_res_path = assets_dir / self.BASE_RESOURCE_FILE
 
         if not base_res_path.is_file():
             raise RuntimeError(f"base resource file '{base_res_path}' not found")
 
-        res_paths = [Path(str(base_res_path))]
+        # the base theme, themes shipped with mehbar, then user themes
+        res_paths = [base_res_path]
+        res_paths.extend(
+            path
+            for path in sorted(assets_dir.glob("*.gresource"))
+            if path != base_res_path
+        )
         res_paths.extend(sorted((self.cfg_dir / "themes").glob("*.gresource")))
 
         for path in res_paths:

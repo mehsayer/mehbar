@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from functools import cache, lru_cache
+from functools import lru_cache
 from typing import Any
 
 import anyio
@@ -17,35 +17,30 @@ from gi.repository import GLib, Gtk, Pango  # type: ignore
 from .actions import ActionInterface, CallableAction, ExecAction
 from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
-from .tools import OptionalFormatter, next_prime
+from .tools import OptionalFormatter, next_prime, split_format
 
 
 class IconPosition(Enum):
     START = 0
     END = 1
     NONE = 2
+    # between two labels, only set by `{ramp}` in the middle of a label
+    MIDDLE = 3
+
+
+# hides the icon, unlike `!default` which keeps the label icon
+NO_ICON = "!none"
 
 
 @dataclass(frozen=True)
 class WidgetContent:
-    RE_SPEC = re.compile(
-        r"""\[\s*
-            (?:
-                (?:icon\s*=\s*(?P<icon>[\w\!\_\:\/\.\-]+)\s*
-                (?P<pos>[<>])?\s*(?:;)\s*)
-                |(?:classes\s*:\s*(?:
-                    (?:
-                        \s*(?:,)?\s*label\s*=\s*(?P<lcls>[\w\_\-\!\ ]+))?
-                        |(?:\s*(?:,)?\s*icon\s*=\s*(?P<icls>[\w\_\-\!\ ]+))?
-                        |(?:\s*(?:,)?\s*widget\s*=\s*(?P<wcls>[\w\_\-\!\ ]+))
-                    ?){1,3}\s*(?:;)\s*
-                )
-                |(?:\s*tooltip\s*=\s*
-                    (?P<tooltip>[^;\]]+)?\s*(?:;)\s*)
-            ){1,3}\s*
-        \]""",
-        re.X,
-    )
+    # a bracketed list of `;`-terminated fields, each starting with a known key
+    RE_SPEC = re.compile(r"\[\s*((?:(?:icon|classes|tooltip)\s*[=:][^;\]]*;\s*)+)\]")
+    RE_ICON = re.compile(r"icon\s*=\s*([\w!:/.\-]+)\s*([<>]?)")
+    RE_CLASSES = re.compile(r"classes\s*(?:=\s*(?P<widget>.*)|:\s*(?P<parts>.*))")
+    RE_CLASSES_PART = re.compile(r"(widget|icon|label)\s*=\s*(.*)")
+    RE_CLASS_NAME = re.compile(r"-?[A-Za-z_][\w\-]*|!none")
+    RE_TOOLTIP = re.compile(r"tooltip\s*=\s*(.*)")
 
     icon: str | None
     icon_position: IconPosition
@@ -54,9 +49,20 @@ class WidgetContent:
     icon_classes: frozenset[str] | None
     label_classes: frozenset[str] | None
     widget_classes: frozenset[str] | None
+    # text after the icon, when it is between two labels
+    label_end: str | None = None
 
     @classmethod
-    @cache
+    def _parse_class_names(cls, text: str, spec: str) -> frozenset[str]:
+        names = text.split()
+
+        if not names or not all(cls.RE_CLASS_NAME.fullmatch(n) for n in names):
+            raise BarConfigError(f"invalid CSS class names '{text}' in '{spec}'")
+
+        return frozenset(names)
+
+    @classmethod
+    @lru_cache(maxsize=256)
     def parse(cls, text: str | None) -> WidgetContent:
         """
         Parses the string of the following format, returns a `WidgetContent` instance:
@@ -65,10 +71,13 @@ class WidgetContent:
             ICON SPECIFICATION
                 icon=<ICON NAME><ICON POSITION>
                     ICON NAME
-                        The name of the icon as specified in the configuration
+                        The name of the icon as specified in the configuration,
+                        `!none` hides the icon, `!default` keeps the label icon
+                        (useful in ramps)
                     ICON POSITION
                         `>`, to the right, or `<`, to the left from the label.
-                        Optional, defaults to `<` if not specified.
+                        Optional, defaults to `<` if not specified. A `{ramp}`
+                        field in the label places ramp icons instead.
             CSS CLASSES
                 classes:widget=<CLASS 1> ... <CLASS N>, icon=..., label=...
                     widget=<CLASS 1> ... <CLASS N>
@@ -77,60 +86,94 @@ class WidgetContent:
                         Space-separated list of CSS classes to be applied to the icon
                     label=<CLASS 1> ... <CLASS N>
                         Space-separated list of CSS classes to be applied to the label
+                classes=<CLASS 1> ... <CLASS N>
+                    Same as `classes:widget=...`
+                `!none` instead of class names removes the classes
             TOOLTIP
                 tooltip=<TOOLTIP TEXT>
-                    Tooltip text, may contain format fields
+                    Tooltip text, may contain format fields, but not `;` or `]`
             TEXT
                 Label text
 
-            All fields are optional, empty (lacking values), repeating and unknown
-            fields are not allowed
+            Fields may come in any order and are all optional. Each field must
+            end with `;`. Empty, repeating and malformed fields, as well as
+            more than one specification, raise `BarConfigError`. Brackets that
+            do not start with a known field are left in the text as is.
         """
 
         icon = None
         icon_position = IconPosition.NONE
-        icon_classes = None
-        label_classes = None
-        widget_classes = None
+        classes: dict[str, frozenset[str]] = {}
         tooltip_text = None
-        label = None
 
-        if text is not None:
-            if (match_spec := cls.RE_SPEC.search(text)) is not None:
-                icon = match_spec.group("icon")
+        if text is None:
+            return cls(None, icon_position, None, None, None, None, None)
 
-                if icon is not None:
-                    if icon in ("!none", "!default"):
-                        icon = None
+        specs = list(cls.RE_SPEC.finditer(text))
 
-                    match match_spec.group("pos"):
-                        case ">":
-                            icon_position = IconPosition.END
-                        case "<" | None:
-                            icon_position = IconPosition.START
+        if len(specs) > 1:
+            raise BarConfigError(f"more than one specification in '{text}'")
 
-                if (icon_classes_ := match_spec.group("icls")) is not None:
-                    icon_classes = frozenset(icon_classes_.split())
+        if specs:
+            seen = set()
 
-                if (label_classes_ := match_spec.group("lcls")) is not None:
-                    label_classes = frozenset(label_classes_.split())
+            for field in specs[0].group(1).split(";")[:-1]:
+                field = field.strip()
+                key = field.partition("=")[0].partition(":")[0].strip()
 
-                if (widget_classes_ := match_spec.group("wcls")) is not None:
-                    widget_classes = frozenset(widget_classes_.split())
+                if key in seen:
+                    raise BarConfigError(f"repeating '{key}' field in '{text}'")
+                seen.add(key)
 
-                if (tooltip_text_ := match_spec.group("tooltip")) is not None:
-                    tooltip_text = tooltip_text_.strip()
+                if key == "icon":
+                    if (m := cls.RE_ICON.fullmatch(field)) is None:
+                        raise BarConfigError(f"invalid icon '{field}' in '{text}'")
 
-            label = cls.RE_SPEC.sub("", text)
+                    icon = None if m.group(1) == "!default" else m.group(1)
+                    icon_position = (
+                        IconPosition.END if m.group(2) == ">" else IconPosition.START
+                    )
+
+                elif key == "classes":
+                    if (m := cls.RE_CLASSES.fullmatch(field)) is None:
+                        raise BarConfigError(f"invalid classes '{field}' in '{text}'")
+
+                    if (widget := m.group("widget")) is not None:
+                        classes["widget"] = cls._parse_class_names(widget, text)
+                    else:
+                        for part in m.group("parts").split(","):
+                            m_part = cls.RE_CLASSES_PART.fullmatch(part.strip())
+
+                            if m_part is None:
+                                raise BarConfigError(
+                                    f"invalid classes '{part.strip()}' in '{text}'"
+                                )
+
+                            target, names = m_part.groups()
+
+                            if target in classes:
+                                raise BarConfigError(
+                                    f"repeating '{target}' classes in '{text}'"
+                                )
+
+                            classes[target] = cls._parse_class_names(names, text)
+
+                else:  # tooltip, the only other key RE_SPEC accepts
+                    m = cls.RE_TOOLTIP.fullmatch(field)
+
+                    if m is None or not (tooltip_text := m.group(1).strip()):
+                        raise BarConfigError(f"invalid tooltip '{field}' in '{text}'")
+
+            text = text[: specs[0].start()] + text[specs[0].end() :]
 
         return cls(
             icon,
             icon_position,
-            label,
+            text,
             tooltip_text,
-            icon_classes,
-            label_classes,
-            widget_classes,
+            classes.get("icon"),
+            classes.get("label"),
+            classes.get("widget"),
         )
 
 
@@ -260,6 +303,10 @@ class BarWidget(Gtk.Box):
         self.widget_name = name
         self.set_name(name)
         self.add_css_class("bar-widget")
+
+        # lets themes style widgets by type, e.g. `.bar-widget.i3_mode`
+        if wtype := getattr(self, "TYPE", None):
+            self.add_css_class(wtype)
 
         self.cfg = res_mgr.get_cfg_for_name(name) if cfg is None else cfg
 
@@ -430,16 +477,17 @@ class WidgetBase(BarWidget):
         ):
             raise BarConfigError("'ramp' must be a list of strings")
 
+        # parsed upfront to report invalid entries on startup
+        self._ramp_contents = [WidgetContent.parse(r) for r in self.ramp]
+
         self.max_ramp_level = self.cfg.get("max_ramp_level", self.DFL_RAMP_IDX)
 
-        icon_position = self.content.icon_position
+        # format strings of the labels before and after the icon
+        self._label_fmt = self.content.label
+        self._label_end_fmt: str | None = None
+        self.label_end: Gtk.Label | None = None
 
-        if icon_position == IconPosition.NONE:
-            for ramp_str in (*self.ramp, *layout_specs):
-                ramp_content = WidgetContent.parse(ramp_str)
-                if ramp_content.icon_position != IconPosition.NONE:
-                    icon_position = ramp_content.icon_position
-                    break
+        icon_position = self._icon_position(layout_specs)
 
         if icon_position == IconPosition.START:
             self.icon.add_css_class("bar-widget-icon-start")
@@ -449,8 +497,22 @@ class WidgetBase(BarWidget):
             self.icon.add_css_class("bar-widget-icon-end")
             self.append(self.label)
             self.append(self.icon)
+        elif icon_position == IconPosition.MIDDLE:
+            self.label_end = Gtk.Label.new()
+            self.label_end.add_css_class("bar-widget-label")
+            self.icon.add_css_class("bar-widget-icon-middle")
+            self.append(self.label)
+            self.append(self.icon)
+            self.append(self.label_end)
         else:
             self.append(self.label)
+
+        labels = (
+            [self.label] if self.label_end is None else [self.label, self.label_end]
+        )
+
+        # shown once there is an icon to show
+        self.icon.set_visible(False)
 
         self.set_halign(Gtk.Align.CENTER)
         self.set_valign(Gtk.Align.CENTER)
@@ -460,28 +522,67 @@ class WidgetBase(BarWidget):
 
         self.formatter = OptionalFormatter()
 
-        self.label.set_xalign(0.5)
-        self.label.set_yalign(0.5)
-        self.label.set_single_line_mode(True)
+        width_chars = self.cfg.get("width_chars", 0)
+        max_width_chars = self.cfg.get("max_width_chars", 0)
 
-        if (width_chars := self.cfg.get("width_chars", 0)) > 0:
-            self.label.set_width_chars(width_chars)
+        for label_ in labels:
+            label_.set_xalign(0.5)
+            label_.set_yalign(0.5)
+            label_.set_single_line_mode(True)
 
-        if (max_width_chars := self.cfg.get("max_width_chars", 0)) > 0:
-            self.label.set_max_width_chars(max_width_chars)
-            self.label.set_ellipsize(Pango.EllipsizeMode.END)
+            if width_chars > 0:
+                label_.set_width_chars(width_chars)
+
+            if max_width_chars > 0:
+                label_.set_max_width_chars(max_width_chars)
+                label_.set_ellipsize(Pango.EllipsizeMode.END)
 
         self._updater = IdleUpdater(self.apply_content)
 
         # State of GTK widgets, GTK main thread only
         self._shown_icon: str | None = None
         self._shown_label: str | None = None
+        self._shown_label_end: str | None = None
         self._shown_tooltip: str | None = None
         self._shown_classes: dict[Gtk.Widget, frozenset[str]] = {
             self: frozenset(),
-            self.label: frozenset(),
             self.icon: frozenset(),
         }
+        self._shown_classes.update((label_, frozenset()) for label_ in labels)
+
+    def _icon_position(self, layout_specs: Iterable[str]) -> IconPosition:
+        """A `{ramp}` field places ramp icons, otherwise the first icon
+        position found in the label, the ramp or `layout_specs` is used.
+        Sets up label format strings."""
+
+        ramp_has_icons = any(
+            r.icon_position != IconPosition.NONE for r in self._ramp_contents
+        )
+
+        if (
+            ramp_has_icons
+            and (parts := split_format(self.content.label, "ramp")) is not None
+        ):
+            before, ramp_field, after = parts
+
+            # the ramp label, if any, goes after the icon
+            if not before.strip():
+                return IconPosition.START
+            if not after.strip():
+                return IconPosition.END
+
+            self._label_fmt = before
+            self._label_end_fmt = ramp_field + after
+            return IconPosition.MIDDLE
+
+        if self.content.icon_position != IconPosition.NONE:
+            return self.content.icon_position
+
+        for content in (*self._ramp_contents, *map(WidgetContent.parse, layout_specs)):
+            if content.icon_position != IconPosition.NONE:
+                return content.icon_position
+
+        return IconPosition.NONE
 
     @property
     def max_ramp_level(self) -> int:
@@ -506,7 +607,7 @@ class WidgetBase(BarWidget):
     def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
         if (idx := self.ramp_index(ramp_level)) is None:
             return None
-        return WidgetContent.parse(self.ramp[idx])
+        return self._ramp_contents[idx]
 
     # Content
 
@@ -539,7 +640,11 @@ class WidgetBase(BarWidget):
             if ramp.widget_classes is not None:
                 widget_classes = ramp.widget_classes
 
-        label = self.formatter.vformat(base.label, (), fields).strip()
+        label = self.formatter.vformat(self._label_fmt, (), fields).strip()
+        label_end = None
+
+        if self._label_end_fmt is not None:
+            label_end = self.formatter.vformat(self._label_end_fmt, (), fields).strip()
 
         if tooltip is not None:
             tooltip = self.formatter.vformat(tooltip, (), fields).strip() or None
@@ -552,6 +657,7 @@ class WidgetBase(BarWidget):
             icon_classes,
             label_classes,
             widget_classes,
+            label_end,
         )
 
     def set_new_content_i(self, ramp_level: int = -1, **fields: Any):
@@ -582,13 +688,26 @@ class WidgetBase(BarWidget):
     def apply_content(self, content: WidgetContent):
         """Updates GTK widgets, must be called from GTK main thread."""
 
-        if content.icon is not None and content.icon != self._shown_icon:
-            self._shown_icon = content.icon
-            self.icon.set_from_paintable(self.res_mgr.get_paintable(content.icon))
+        icon = None if content.icon == NO_ICON else content.icon
+
+        if icon != self._shown_icon:
+            self._shown_icon = icon
+
+            # e.g. ramp entries having only CSS classes
+            if icon is None:
+                self.icon.clear()
+            else:
+                self.icon.set_from_paintable(self.res_mgr.get_paintable(icon))
+
+            self.icon.set_visible(icon is not None)
 
         if content.label is not None and content.label != self._shown_label:
             self._shown_label = content.label
             self.label.set_label(content.label)
+
+        if self.label_end is not None and content.label_end != self._shown_label_end:
+            self._shown_label_end = content.label_end
+            self.label_end.set_label(content.label_end or "")
 
         if content.tooltip_text != self._shown_tooltip:
             self._shown_tooltip = content.tooltip_text
@@ -597,3 +716,6 @@ class WidgetBase(BarWidget):
         self._sync_css_classes(self, content.widget_classes)
         self._sync_css_classes(self.label, content.label_classes)
         self._sync_css_classes(self.icon, content.icon_classes)
+
+        if self.label_end is not None:
+            self._sync_css_classes(self.label_end, content.label_classes)
