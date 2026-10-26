@@ -153,6 +153,7 @@ class WidgetBattery(WidgetBase):
 
     MAX_CHARGE = 100
     TYPE = "battery"
+    DEFAULT_TOOLTIP = "Battery: {percent}%, {status} {timeleft:%h:%M}"
     POLLING = True
 
     def ramp_index(self, ramp_level: int) -> int | None:

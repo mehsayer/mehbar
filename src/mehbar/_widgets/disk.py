@@ -11,6 +11,7 @@ class WidgetDiskUsage(WidgetBase):
     respond."""
 
     TYPE = "disk_usage"
+    DEFAULT_TOOLTIP = "{path}: {used_gib} of {total_gib} GiB used, {avail_gib} GiB free"
     POLLING = True
     TIMEOUT = 5
 
@@ -51,4 +52,5 @@ class WidgetDiskUsage(WidgetBase):
                 total_gib=round(dusage.total / (1024**3), 1),
                 avail_gib=round(dusage.free / (1024**3), 1),
                 percent=percent,
+                path=self.path,
             )

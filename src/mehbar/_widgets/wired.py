@@ -72,7 +72,7 @@ class UnmanagedBackend(WiredInfoQuery):
         base_path = self.PATH_NET / iface
 
         if not base_path.is_dir():
-            # e.g. an USB adapter is unplugged
+            # e.g. a USB adapter is unplugged
             return WiredInfo(iface, None, False, False)
 
         # the operational state is 'down' without a link, it does not tell
@@ -121,6 +121,7 @@ class WidgetWired(PolledNetWidget):
     the state: down, no link, connected."""
 
     TYPE = "wired"
+    DEFAULT_TOOLTIP = "{iface}: {ipv4}"
     RAMP_BY_STATE = True
 
     BACKEND_MAP = {

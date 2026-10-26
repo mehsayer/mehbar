@@ -96,7 +96,7 @@ class SensorWidget(WidgetBase):
 
         self.path = get_source_path(self.cfg.get("path"))
 
-        label_fields = self.formatter.get_fields(self.content.label)
+        label_fields = self.label_fields()
 
         if self.path is None:
             expected = [*self.read_sensors(), self.VALUE_FIELD]

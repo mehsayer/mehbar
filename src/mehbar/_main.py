@@ -75,9 +75,23 @@ class MehBarGUI(Gtk.ApplicationWindow):
     MIN_WIDTH = 256
     DEFAULT_ANCHOR = "top"
     DEFAULT_LAYER = "top"
-    DEFAULT_HOMOGENOUS = True
+    DEFAULT_HOMOGENEOUS = True
     SECTION_NAMES = ResourceManager.WIDGET_CFG_SECTIONS
     NAMESPACE = "mehbar"
+    BAR_OPTIONS = frozenset(
+        {
+            "position",
+            "layer",
+            "height",
+            "width",
+            "gaps",
+            "homogeneous",
+            "icon_size",
+            "theme",
+            "color_scheme",
+            "tooltip_trigger",
+        }
+    )
     STOP_TIMEOUT = 3
 
     def __init__(
@@ -99,19 +113,23 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         bar_cfg = self.res_mgr.bar_cfg
 
-        # GTK spells it 'homogeneous', the misspelling is still accepted
-        is_homogenous = bar_cfg.get(
-            "homogeneous", bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS)
-        )
+        # e.g. misspelled ones
+        if unknown := sorted(set(bar_cfg) - self.BAR_OPTIONS):
+            logging.warning("unknown [bar] options: %s", ", ".join(unknown))
 
-        if not isinstance(is_homogenous, bool):
+        if bar_cfg.get("tooltip_trigger", "hover") not in BarWidget.TOOLTIP_TRIGGERS:
+            raise BarConfigError("'tooltip_trigger' must be 'hover' or 'click'")
+
+        is_homogeneous = bar_cfg.get("homogeneous", self.DEFAULT_HOMOGENEOUS)
+
+        if not isinstance(is_homogeneous, bool):
             raise BarConfigError("'homogeneous' must be true or false")
 
         self._setup_layer_shell(bar_cfg)
         self._load_css()
 
         self.main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.main_box.set_homogeneous(is_homogenous)
+        self.main_box.set_homogeneous(is_homogeneous)
         self.main_box.set_valign(Gtk.Align.FILL)
         self.main_box.add_css_class("bar-horizontal")
         self.main_box.add_css_class(f"bar-{self.position}")
@@ -128,7 +146,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.boxes["start"].set_halign(Gtk.Align.START)
         self.boxes["end"].set_halign(Gtk.Align.END)
 
-        if is_homogenous:
+        if is_homogeneous:
             self.boxes["center"].set_halign(Gtk.Align.CENTER)
         else:
             self.boxes["center"].set_halign(Gtk.Align.START)

@@ -5,6 +5,7 @@ from mehbar.widget import WidgetBase
 
 class WidgetCPUUsage(WidgetBase):
     TYPE = "cpu_usage"
+    DEFAULT_TOOLTIP = "CPU: {percent}%"
     POLLING = True
     # the first measurement takes at least this long
     FIRST_SAMPLE = 0.5

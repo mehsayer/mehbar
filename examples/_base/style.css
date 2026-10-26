@@ -165,6 +165,17 @@ tooltip {
 }
 
 
+popover.bar-tooltip-popover > contents {
+    color: @mb_fg;
+    background-color: @mb_bg_dark;
+    border: 1px solid @mb_border;
+    border-radius: 6px;
+}
+
+.bar-tooltip-icon {
+    padding-right: 0.5ex;
+}
+
 /* State classes for ramps, on the widget, the label or the icon. On the
    widget, they must win over the widget type rules above. */
 

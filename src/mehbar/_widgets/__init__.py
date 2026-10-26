@@ -24,6 +24,7 @@ WIDGET_TYPES: dict[str, tuple[str, str]] = {
     "exec_tail": ("exec", "WidgetExecTail"),
     "fan_speed": ("fan_speed", "WidgetFanSpeed"),
     "file": ("file", "WidgetFile"),
+    "idle_inhibitor": ("idle_inhibitor", "WidgetIdleInhibitor"),
     "i3_kblayout": ("i3_keyboard", "WidgetI3KeyboardLayout"),
     "i3_mode": ("i3_mode", "WidgetI3Mode"),
     "i3_scratchpad": ("i3_scratchpad", "WidgetI3Scratchpad"),
@@ -36,6 +37,7 @@ WIDGET_TYPES: dict[str, tuple[str, str]] = {
     "session": ("session", "WidgetSession"),
     "static": ("static", "WidgetStatic"),
     "temperature": ("temperature", "WidgetTemperature"),
+    "weather": ("weather", "WidgetWeather"),
     "wifi": ("wifi", "WidgetWifi"),
     "wired": ("wired", "WidgetWired"),
 }

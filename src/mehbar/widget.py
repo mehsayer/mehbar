@@ -14,7 +14,7 @@ from typing import Any
 
 import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
-from gi.repository import GLib, Gtk, Pango  # type: ignore
+from gi.repository import Gdk, GLib, Gtk, Pango  # type: ignore
 
 from .actions import ActionInterface, CallableAction, ExecAction
 from .exceptions import BarConfigError
@@ -386,6 +386,7 @@ class BarWidget(Gtk.Box):
     POLLING = False
     # longest sleep of aligned widgets, see `sleep_interval()`
     MAX_ALIGNED_SLEEP = 1.0
+    TOOLTIP_TRIGGERS = ("hover", "click")
 
     def __init__(
         self, name: str, res_mgr: ResourceManager, cfg: dict[str, Any] | None = None
@@ -434,6 +435,8 @@ class BarWidget(Gtk.Box):
 
         # set by the bar while `run()` is running
         self.cancel_scope: anyio.CancelScope | None = None
+        # GTK main thread only
+        self.has_primary_click = False
         # event loop thread only
         self._available = True
         # GTK main thread only
@@ -570,6 +573,9 @@ class BarWidget(Gtk.Box):
 
     def _onclick(self, button: int, action: ActionInterface):
         if button >= 0 and action is not None:
+            if button == Gdk.BUTTON_PRIMARY:
+                self.has_primary_click = True
+
             controller = Gtk.GestureClick.new()
             controller.set_button(button)
             controller.connect("pressed", self.guard(lambda *_: action.run()))
@@ -620,6 +626,8 @@ class WidgetBase(BarWidget):
     or `layout_specs`, texts the widget may show otherwise."""
 
     DFL_RAMP_IDX = 100
+    # formatted like the label, see `build_tooltip()`
+    DEFAULT_TOOLTIP: str | None = None
     # ramp entries are for states, e.g. off, on, connected: the ramp level is
     # the index of the entry
     RAMP_BY_STATE = False
@@ -713,6 +721,30 @@ class WidgetBase(BarWidget):
 
         self._updater = IdleUpdater(self.guard(self.apply_content))
 
+        tooltip = self.cfg.get("tooltip", self.DEFAULT_TOOLTIP)
+
+        if tooltip is not None and not isinstance(tooltip, str):
+            raise BarConfigError("'tooltip' must be a string")
+
+        # an empty string disables the default tooltip
+        self.tooltip_content = WidgetContent.parse(tooltip) if tooltip else None
+
+        trigger = self.cfg.get(
+            "tooltip_trigger", self.res_mgr.bar_cfg.get("tooltip_trigger", "hover")
+        )
+
+        if trigger not in self.TOOLTIP_TRIGGERS:
+            triggers = ", ".join(repr(t) for t in self.TOOLTIP_TRIGGERS)
+            raise BarConfigError(f"'tooltip_trigger' must be one of: {triggers}")
+
+        self._tooltip_trigger = trigger
+        self._popover: Gtk.Popover | None = None
+        # the fields of the latest content, for the tooltip
+        self._fields: dict[str, Any] = {}
+
+        # once subclasses have set up their click actions
+        self.connect("realize", self._setup_tooltip)
+
         # State of GTK widgets, GTK main thread only
         self._shown_icon: str | None = None
         self._shown_label: str | None = None
@@ -768,6 +800,107 @@ class WidgetBase(BarWidget):
             raise BarConfigError("'max_ramp_level' must be a number greater than 0")
         self._max_ramp_level = value
 
+    def label_fields(self) -> list[str]:
+        """Fields used by the label and the tooltip."""
+        fields = self.formatter.get_fields(self.content.label)
+
+        if self.tooltip_content is not None:
+            fields += self.formatter.get_fields(self.tooltip_content.label)
+
+        return fields
+
+    # Tooltips, GTK main thread
+
+    def _setup_tooltip(self, *_):
+        if self.get_has_tooltip() or self._popover is not None:
+            return
+
+        # the primary button may be taken, e.g. by an 'onclick' command
+        if self._tooltip_trigger == "click" and not self.has_primary_click:
+            self._popover = Gtk.Popover()
+            self._popover.add_css_class("bar-tooltip-popover")
+            self._popover.set_parent(self)
+            self.onclick_call(Gdk.BUTTON_PRIMARY, self._toggle_popover)
+        else:
+            self.set_has_tooltip(True)
+            self.connect("query-tooltip", self.guard(self._on_query_tooltip))
+
+    def _on_query_tooltip(self, _widget, _x, _y, _keyboard, tooltip) -> bool:
+        if (content := self.build_tooltip()) is None:
+            return False
+        tooltip.set_custom(content)
+        return True
+
+    def _toggle_popover(self):
+        # popping up outside of a mapped window crashes GTK
+        if self._popover is None or not self.get_mapped():
+            return
+
+        if self._popover.get_visible():
+            self._popover.popdown()
+        elif (content := self.build_tooltip()) is not None:
+            self._popover.set_child(content)
+            self._popover.popup()
+
+    def build_tooltip(self) -> Gtk.Widget | None:
+        """Builds the tooltip when it is shown, from the fields of the latest
+        content: a tooltip of the label or ramp specification, otherwise
+        the `tooltip` option, or the `DEFAULT_TOOLTIP`."""
+        if self._shown_tooltip:
+            return self._tooltip_box(WidgetContent.parse(None), self._shown_tooltip)
+
+        if self.tooltip_content is None:
+            return None
+
+        text = self.formatter.vformat(
+            self.tooltip_content.label, (), self._fields
+        ).strip()
+
+        if not text and self.tooltip_content.icon is None:
+            return None
+
+        return self._tooltip_box(self.tooltip_content, text)
+
+    def _tooltip_box(self, content: WidgetContent, text: str) -> Gtk.Widget:
+        box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
+        box.add_css_class("bar-tooltip")
+
+        for class_name in content.widget_classes or ():
+            box.add_css_class(class_name)
+
+        label = Gtk.Label.new(text)
+        label.set_xalign(0)
+        label.add_css_class("bar-tooltip-label")
+
+        for class_name in content.label_classes or ():
+            label.add_css_class(class_name)
+
+        if content.icon is not None and content.icon != NO_ICON:
+            icon = Gtk.Image.new_from_paintable(
+                self.res_mgr.get_paintable(content.icon)
+            )
+            icon.set_pixel_size(self.res_mgr.pixel_size)
+            icon.add_css_class("bar-tooltip-icon")
+
+            for class_name in content.icon_classes or ():
+                icon.add_css_class(class_name)
+
+            if content.icon_position == IconPosition.END:
+                box.append(label)
+                box.append(icon)
+            else:
+                box.append(icon)
+                box.append(label)
+        else:
+            box.append(label)
+
+        return box
+
+    def teardown(self):
+        if self._popover is not None:
+            self._popover.unparent()
+            self._popover = None
+
     # Ramps
 
     def ramp_index(self, ramp_level: int) -> int | None:
@@ -815,6 +948,8 @@ class WidgetBase(BarWidget):
                 label_classes = ramp.label_classes
             if ramp.widget_classes is not None:
                 widget_classes = ramp.widget_classes
+
+        self._fields = fields
 
         label = self.formatter.vformat(self._label_fmt, (), fields).strip()
         label_end = None
@@ -885,9 +1020,8 @@ class WidgetBase(BarWidget):
             self._shown_label_end = content.label_end
             self.label_end.set_label(content.label_end or "")
 
-        if content.tooltip_text != self._shown_tooltip:
-            self._shown_tooltip = content.tooltip_text
-            self.set_tooltip_text(content.tooltip_text)
+        # shown by `build_tooltip()`
+        self._shown_tooltip = content.tooltip_text
 
         self._sync_css_classes(self, content.widget_classes)
         self._sync_css_classes(self.label, content.label_classes)

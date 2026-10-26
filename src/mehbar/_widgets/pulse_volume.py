@@ -20,6 +20,7 @@ class WidgetPulseVolume(WidgetBase):
     the sink is not available."""
 
     TYPE = "pulse_volume"
+    DEFAULT_TOOLTIP = "Volume: {percent}%"
     DEFAULT_VOLUME = 100
     MAX_VOLUME = 200
     MIN_VOLUME = 20
@@ -99,7 +100,7 @@ class WidgetPulseVolume(WidgetBase):
                 await self._op(pulse.get_sink_by_name, self.sink_name)
             ).index
         except PulseIndexError:
-            # e.g. an USB or Bluetooth sink is not connected, or there are no
+            # e.g. a USB or Bluetooth sink is not connected, or there are no
             # sinks at all, it is resolved again once a sink is added
             self._sink_idx = -1
 

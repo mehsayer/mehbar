@@ -19,6 +19,7 @@ class WidgetTemperature(SensorWidget):
     temperature, or the highest one if the CPU sensor is not known."""
 
     TYPE = "temperature"
+    DEFAULT_TOOLTIP = "Temperature: {temp}°C"
 
     VALUE_FIELD = "temp"
     MAX_OPTION = "max_temp"

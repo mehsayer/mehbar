@@ -81,6 +81,7 @@ homogeneous = true      # equally wide start, center and end sections
 icon_size = 20
 theme = "tokyo-night"
 color_scheme = "dark"   # light, dark or system
+tooltip_trigger = "hover"  # hover or click, see Tooltips
 ```
 
 ### Widgets
@@ -108,6 +109,7 @@ Options common to all widgets:
 | `onclick` | Commands run on click, the first for the left button, the second for the middle one, the third for the right one; `""` skips a button |
 | `onscroll` | Two commands, run on scrolling up and down; `""` does nothing |
 | `width_chars`, `max_width_chars` | Label width, longer labels are ellipsized |
+| `tooltip`, `tooltip_trigger` | See [Tooltips](#tooltips) |
 
 Commands are either a string, split like a shell would, or a list of
 arguments, e.g. `onclick = ["pavucontrol", "", ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"]]`.
@@ -126,6 +128,25 @@ server, and pick up restarted D-Bus services. Widgets of hardware or
 services that are missing altogether are hidden: `battery` without
 batteries, `wifi` and `wired` without interfaces, `i3_*` widgets without i3
 or sway.
+
+### Tooltips
+
+The `tooltip` option is formatted like the label, with the same fields and
+specification, and may span several lines:
+
+```toml
+tooltip = "[icon=memory;]{used_gib} of {total_gib} GiB used"
+```
+
+Tooltips appear on hover, or, with `tooltip_trigger = "click"` in `[bar]`
+or in a widget, on a left click; widgets whose left click does something
+else, e.g. `application` or an `onclick` command, show them on hover. They
+are made when they appear and do not follow later changes. Many widgets have
+a default tooltip, `tooltip = ""` turns it off. The `datetime` tooltip is a
+calendar, unless `tooltip` is set. A `tooltip` field in a label or ramp
+specification overrides the option.
+
+Unknown `[bar]` options, e.g. misspelled ones, are reported in the log.
 
 ### Labels
 
@@ -186,6 +207,7 @@ Fields are available in labels. Polling widgets need an `interval`.
 | `fan_speed` | `path`, `max_speed` | `rpm`, `<chip>/<label>` without `path` | speed |
 | `file` | `path` | see below | `ramp_level` |
 | `i3_kblayout` | `rewrite` | `layout` | |
+| `idle_inhibitor` | `active` | `status` | off, on |
 | `i3_mode` | `always_show`, `rewrite` | `mode` | |
 | `i3_scratchpad` | `always_show` | `count` | count |
 | `i3_window` | `always_show`, `rewrite` | `title` | |
@@ -197,6 +219,7 @@ Fields are available in labels. Polling widgets need an `interval`.
 | `session` | | `username`, `uid`, `hostname`, `fqdn`, `uptime` | |
 | `static` | | | |
 | `temperature` | `path`, `max_temp` | `temp`, `<chip>/<label>` without `path` | temperature |
+| `weather` | `location` or `latitude` and `longitude`, `provider`, `api_key`, `units` | `temp`, `feels_like`, `humidity`, `wind_speed`, `wind_direction`, `condition`, `location`, `temp_unit`, `speed_unit` | conditions, see below |
 | `wifi` | `backend`, `iface` | `ssid`, `percent`, `rssi`, `security`, `ipv4`, `ipv6`, `hwaddr`, `iface` | no signal, then signal |
 | `wired` | `backend`, `iface` | `ipv4`, `ipv6`, `hwaddr`, `name`, `iface` | down, no link, connected |
 
@@ -227,6 +250,34 @@ Notes:
   `DEFAULT_MODULES` in `src/mehbar/_widgets/playerctl.py`. Without
   `player_names`, it follows the player that plays.
 - `pulse_volume`: scrolling changes the volume, a right click toggles mute.
+- `idle_inhibitor` keeps the screen from blanking and locking while it is
+  on, a click turns it on or off, `active = true` turns it on at start. It
+  uses the Wayland idle inhibit protocol, which sway supports.
+- `weather` providers:
+  - `open-meteo`, the default, [Open-Meteo](https://open-meteo.com), free
+    for non-commercial use, no key;
+  - `met.no`, the [Norwegian Meteorological Institute](https://api.met.no),
+    free, no key;
+  - `openweathermap`, [OpenWeatherMap](https://openweathermap.org), needs
+    an `api_key`, which is free for up to 1000 calls a day, sign up at
+    openweathermap.org.
+
+  `location` is a place name, looked up with the Open-Meteo geocoding API.
+  `units` are `metric`, the default, or `imperial`. The `interval` must be
+  at least 60 seconds, e.g. 900. Ramp entries are for the conditions clear,
+  partly cloudy, cloudy, fog, drizzle, rain, snow and thunderstorm; eight
+  more entries, if given, are used at night. Failed updates are retried
+  every minute, the last forecast stays meanwhile:
+
+  ```toml
+  [end.weather]
+  type = "weather"
+  location = "Berlin"
+  interval = 900
+  ramp = ["[icon=sun;]", "[icon=cloud-sun;]", "[icon=cloud;]", "[icon=cloud-fog;]",
+          "[icon=drop;]", "[icon=cloud-rain;]", "[icon=cloud-snow;]", "[icon=cloud-lightning;]"]
+  label = "{temp}{temp_unit}"
+  ```
 
 ## Themes
 
@@ -255,6 +306,7 @@ CSS classes and names:
 | `.bar-widget-icon-start`, `-end`, `-middle` | icons by position |
 | `.i3-workspace` with `.focused`, `.visible`, `.urgent`, `.previous`, `.empty` | workspace buttons |
 | `.playerctl`, `.playerctl-button`, `#playerctl-<module>` | player controls |
+| `.bar-tooltip`, `.bar-tooltip-label`, `.bar-tooltip-icon`, `.bar-tooltip-popover` | tooltips |
 
 ### Building themes
 
@@ -290,6 +342,7 @@ use the `acpi` driver for them.
     venv/bin/pip install -e '.[dev]'
     venv/bin/python -m pytest
     ruff check src tests && ruff format --check src tests
+    codespell src tests examples README.md
 
 Tests marked `display` need a Wayland session, they are skipped without one.
 

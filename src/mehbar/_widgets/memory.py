@@ -3,6 +3,9 @@ from mehbar.widget import WidgetBase
 
 class WidgetMemoryUsage(WidgetBase):
     TYPE = "memory_usage"
+    DEFAULT_TOOLTIP = (
+        "Memory: {used_gib} of {total_gib} GiB used, {avail_gib} GiB available"
+    )
     POLLING = True
 
     async def run(self):

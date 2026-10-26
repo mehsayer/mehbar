@@ -243,7 +243,7 @@ class PolledNetWidget(WidgetBase):
 
         self.qry_options = NetOptions.NONE
 
-        for fld in set(self.formatter.get_fields(self.content.label)):
+        for fld in set(self.label_fields()):
             if fld not in self.FMT_FIELDS:
                 raise BarConfigError(f"unknown label field: {fld}")
             self.qry_options |= NetOptions.for_name(fld)
@@ -273,7 +273,7 @@ class PolledNetWidget(WidgetBase):
             if self.backend is None:
                 await self._detect_backend()
 
-            # e.g. an USB adapter may be plugged in later
+            # e.g. a USB adapter may be plugged in later
             if (iface := self.iface or self.detect_iface()) is None:
                 self.set_available_i(False)
                 continue

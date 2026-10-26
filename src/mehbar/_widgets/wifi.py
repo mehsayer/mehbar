@@ -19,6 +19,7 @@ class WidgetWifi(PolledNetWidget):
     strength."""
 
     TYPE = "wifi"
+    DEFAULT_TOOLTIP = "{iface}: {ssid} {percent}% {ipv4}"
     MAX_SIGNAL = 100
 
     BACKEND_MAP = {
