@@ -64,7 +64,8 @@ class _Battery:
             now,
             full,
             rate,
-            _read_int(path, "time_to_empty_now") or _read_int(path, "time_to_empty_avg"),
+            _read_int(path, "time_to_empty_now")
+            or _read_int(path, "time_to_empty_avg"),
             _read_int(path, "time_to_full_now") or _read_int(path, "time_to_full_avg"),
         )
 

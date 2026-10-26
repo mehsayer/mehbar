@@ -60,8 +60,12 @@ class WidgetNetworkRate(WidgetBase):
             if info is not None and last_info is not None and now > last_ts:
                 t_delta = now - last_ts
                 # counters are reset when the interface is recreated
-                tx_rate = max(0, int((info.bytes_sent - last_info.bytes_sent) / t_delta))
-                rx_rate = max(0, int((info.bytes_recv - last_info.bytes_recv) / t_delta))
+                tx_rate = max(
+                    0, int((info.bytes_sent - last_info.bytes_sent) / t_delta)
+                )
+                rx_rate = max(
+                    0, int((info.bytes_recv - last_info.bytes_recv) / t_delta)
+                )
 
             last_info = info
             last_ts = now

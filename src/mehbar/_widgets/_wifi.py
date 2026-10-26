@@ -152,7 +152,9 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
             act_conn_obj = dev_props.get("ActiveConnection")
 
             if not is_null_path(act_conn_obj):
-                conn_obj = self.get_prop(act_conn_obj, self.ACT_CONN_IFACE, "Connection")
+                conn_obj = self.get_prop(
+                    act_conn_obj, self.ACT_CONN_IFACE, "Connection"
+                )
                 (settings,) = self.call(
                     conn_obj, self.CONN_IFACE, "GetSettings", None, "(a{sa{sv}})"
                 )
@@ -336,7 +338,10 @@ class ConnManBackend(DBusFacade, WifiInfoQuery):
             if svc.get("Type") != "wifi" or svc.get("State") not in ("ready", "online"):
                 continue
 
-            if not (eth_obj := svc.get("Ethernet")) or eth_obj.get("Interface") != iface:
+            if (
+                not (eth_obj := svc.get("Ethernet"))
+                or eth_obj.get("Interface") != iface
+            ):
                 continue
 
             if WifiOptions.SECURITY in options:

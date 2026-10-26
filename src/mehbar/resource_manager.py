@@ -149,9 +149,7 @@ class _ResourceSource(_ConfigSource):
 
     def exists(self) -> bool:
         try:
-            Gio.resources_enumerate_children(
-                self.prefix, Gio.ResourceLookupFlags.NONE
-            )
+            Gio.resources_enumerate_children(self.prefix, Gio.ResourceLookupFlags.NONE)
         except GLib.Error:
             return False
         return True
@@ -218,6 +216,10 @@ class ResourceManager:
 
         self._theme = self._resolve_theme(theme, base_cfg, user_cfg)
         self._theme_srcs = self._get_theme_sources(self._theme)
+
+        if not self._theme_srcs:
+            # not found
+            self._theme = None
 
         theme_cfg: dict[str, Any] = {}
         for src in self._theme_srcs:
@@ -558,7 +560,9 @@ class ResourceManager:
                 case "file":
                     res_file = Gio.File.new_for_uri(url)
                     if not res_file.query_exists():
-                        raise FileNotFoundError(f"file '{res_file.get_path()}' does not exist")
+                        raise FileNotFoundError(
+                            f"file '{res_file.get_path()}' does not exist"
+                        )
                     return self._get_file_icon(res_file)
                 case "":
                     raise ValueError("no such preloaded icon")

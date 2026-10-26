@@ -91,7 +91,9 @@ class ExecWidgetBase(JSONInputMixin, WidgetBase):
             raise BarConfigError("'cmdline' must be specified")
 
         # a string is run by the shell
-        self.cmdline = cmdline if isinstance(cmdline, str) else [str(a) for a in cmdline]
+        self.cmdline = (
+            cmdline if isinstance(cmdline, str) else [str(a) for a in cmdline]
+        )
 
         max_lps = self.cfg.get("max_lps", self.MAX_LPS)
         self.max_lps = max(min(max_lps, self.MAX_LPS), 1)

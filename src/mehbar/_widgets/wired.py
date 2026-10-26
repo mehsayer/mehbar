@@ -191,7 +191,10 @@ class ConnManBackend(DBusFacade, WiredInfoQuery):
             ):
                 continue
 
-            if not (eth_obj := svc.get("Ethernet")) or eth_obj.get("Interface") != iface:
+            if (
+                not (eth_obj := svc.get("Ethernet"))
+                or eth_obj.get("Interface") != iface
+            ):
                 continue
 
             info.connected = True

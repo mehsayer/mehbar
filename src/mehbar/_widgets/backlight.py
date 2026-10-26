@@ -68,9 +68,7 @@ class WidgetBacklight(WidgetBase):
                 self.set_new_content_i(percent, percent=percent)
 
     async def run(self):
-        self._sstream, rstream = anyio.create_memory_object_stream[int](
-            self.QUEUE_SIZE
-        )
+        self._sstream, rstream = anyio.create_memory_object_stream[int](self.QUEUE_SIZE)
 
         try:
             async with self.driver as driver, anyio.create_task_group() as grp:

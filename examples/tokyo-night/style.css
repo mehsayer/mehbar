@@ -175,29 +175,35 @@ tooltip {
 }
 
 
-/* State classes for ramps, on the widget, the label or the icon */
+/* State classes for ramps, on the widget, the label or the icon. On the
+   widget, they must win over the widget type rules above. */
 
 .dim,
+.bar-widget.dim,
 .dim .bar-widget-icon {
     color: @tn_comment;
 }
 
 .accent,
+.bar-widget.accent,
 .accent .bar-widget-icon {
     color: @tn_blue;
 }
 
 .good,
+.bar-widget.good,
 .good .bar-widget-icon {
     color: @tn_green;
 }
 
 .warning,
+.bar-widget.warning,
 .warning .bar-widget-icon {
     color: @tn_yellow;
 }
 
 .critical,
+.bar-widget.critical,
 .critical .bar-widget-icon {
     color: @tn_red;
 }
