@@ -387,6 +387,8 @@ class BarWidget(Gtk.Box):
     # longest sleep of aligned widgets, see `sleep_interval()`
     MAX_ALIGNED_SLEEP = 1.0
     TOOLTIP_TRIGGERS = ("hover", "click")
+    # when the latest tooltip was hidden, of any widget
+    tooltip_hidden_at = 0.0
 
     def __init__(
         self, name: str, res_mgr: ResourceManager, cfg: dict[str, Any] | None = None
@@ -628,6 +630,9 @@ class WidgetBase(BarWidget):
     DFL_RAMP_IDX = 100
     # formatted like the label, see `build_tooltip()`
     DEFAULT_TOOLTIP: str | None = None
+    TOOLTIP_DELAY_MS = 500
+    # seconds after a tooltip is hidden in which the next one shows at once
+    TOOLTIP_BROWSE_TIME = 0.5
     # ramp entries are for states, e.g. off, on, connected: the ramp level is
     # the index of the entry
     RAMP_BY_STATE = False
@@ -739,6 +744,7 @@ class WidgetBase(BarWidget):
 
         self._tooltip_trigger = trigger
         self._popover: Gtk.Popover | None = None
+        self._tooltip_timer = 0
         # the fields of the latest content, for the tooltip
         self._fields: dict[str, Any] = {}
 
@@ -812,35 +818,73 @@ class WidgetBase(BarWidget):
     # Tooltips, GTK main thread
 
     def _setup_tooltip(self, *_):
-        if self.get_has_tooltip() or self._popover is not None:
+        """Tooltips are popovers of their widgets: GTK shows all tooltips in
+        one window, which it resizes while the pointer moves from widget to
+        widget, and which may then keep the size of the previous one."""
+        if self._popover is not None:
             return
+
+        self._popover = Gtk.Popover()
+        self._popover.add_css_class("bar-tooltip-popover")
+        self._popover.set_has_arrow(False)
+        self._popover.set_parent(self)
+
+        if self.res_mgr.bar_cfg.get("position") == "bottom":
+            self._popover.set_position(Gtk.PositionType.TOP)
 
         # the primary button may be taken, e.g. by an 'onclick' command
         if self._tooltip_trigger == "click" and not self.has_primary_click:
-            self._popover = Gtk.Popover()
-            self._popover.add_css_class("bar-tooltip-popover")
-            self._popover.set_parent(self)
             self.onclick_call(Gdk.BUTTON_PRIMARY, self._toggle_popover)
-        else:
-            self.set_has_tooltip(True)
-            self.connect("query-tooltip", self.guard(self._on_query_tooltip))
-
-    def _on_query_tooltip(self, _widget, _x, _y, _keyboard, tooltip) -> bool:
-        if (content := self.build_tooltip()) is None:
-            return False
-        tooltip.set_custom(content)
-        return True
-
-    def _toggle_popover(self):
-        # popping up outside of a mapped window crashes GTK
-        if self._popover is None or not self.get_mapped():
             return
 
-        if self._popover.get_visible():
+        # a tooltip does not take the pointer or the keyboard
+        self._popover.set_autohide(False)
+        self._popover.set_can_target(False)
+
+        motion = Gtk.EventControllerMotion.new()
+        motion.connect("enter", self.guard(self._on_enter))
+        motion.connect("leave", self.guard(self._on_leave))
+        self.add_controller(motion)
+
+    def _on_enter(self, *_):
+        # moving on from a widget that showed its tooltip shows the next one
+        # at once, as GTK does
+        recent = (
+            time.monotonic() - BarWidget.tooltip_hidden_at < self.TOOLTIP_BROWSE_TIME
+        )
+        delay = 0 if recent else self.TOOLTIP_DELAY_MS
+
+        self._cancel_tooltip_timer()
+        self._tooltip_timer = GLib.timeout_add(delay, self.guard(self._show_tooltip))
+
+    def _on_leave(self, *_):
+        self._cancel_tooltip_timer()
+
+        if self._popover is not None and self._popover.get_visible():
             self._popover.popdown()
-        elif (content := self.build_tooltip()) is not None:
-            self._popover.set_child(content)
-            self._popover.popup()
+            BarWidget.tooltip_hidden_at = time.monotonic()
+
+    def _cancel_tooltip_timer(self):
+        if self._tooltip_timer:
+            GLib.source_remove(self._tooltip_timer)
+            self._tooltip_timer = 0
+
+    def _show_tooltip(self) -> bool:
+        self._tooltip_timer = 0
+
+        # popping up outside of a mapped window crashes GTK
+        if self._popover is not None and self.get_mapped():
+            if (content := self.build_tooltip()) is not None:
+                self._popover.set_child(content)
+                self._popover.popup()
+
+        return GLib.SOURCE_REMOVE
+
+    def _toggle_popover(self):
+        if self._popover is not None and self._popover.get_visible():
+            self._popover.popdown()
+        else:
+            self._show_tooltip()
 
     def build_tooltip(self) -> Gtk.Widget | None:
         """Builds the tooltip when it is shown, from the fields of the latest
@@ -897,6 +941,8 @@ class WidgetBase(BarWidget):
         return box
 
     def teardown(self):
+        self._cancel_tooltip_timer()
+
         if self._popover is not None:
             self._popover.unparent()
             self._popover = None

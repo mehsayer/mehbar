@@ -53,7 +53,7 @@ def test_click_trigger_shows_a_popover(make_res_mgr):
     widget._setup_tooltip()
 
     # the popup is tested in a running bar, it needs a mapped window
-    assert widget._popover is not None and not widget.get_has_tooltip()
+    assert widget._popover is not None and widget._popover.get_autohide()
     assert _texts(widget.build_tooltip()) == ["hello"]
 
 
@@ -65,7 +65,8 @@ def test_click_trigger_falls_back_to_hover(make_res_mgr):
     )
     widget._setup_tooltip()
 
-    assert widget._popover is None and widget.get_has_tooltip()
+    # a hover tooltip does not take the pointer
+    assert widget._popover is not None and not widget._popover.get_autohide()
 
 
 def test_invalid_trigger_is_a_config_error(make_res_mgr):
