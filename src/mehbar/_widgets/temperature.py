@@ -20,6 +20,7 @@ class WidgetTemperature(WidgetBase):
     UNIQUE = False
 
     TYPE = "temperature"
+    POLLING = True
 
     MAX_TEMP_LO = 100
     MAX_TEMP_HI = 150

@@ -19,6 +19,7 @@ class WidgetFanSpeed(WidgetBase):
 
     UNIQUE = False
     TYPE = "fan_speed"
+    POLLING = True
 
     DEFAULT_MAX_SPEED = 5000
     MAX_SPEED = 8000

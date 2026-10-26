@@ -215,7 +215,8 @@ class IdleUpdater:
 
 class RewriteMixin:
     """Rewrites text using the `rewrite` mapping of regular expressions to
-    replacements, the first matching expression wins."""
+    replacements. The first expression matching at the start of the text
+    wins, the text it matches is replaced."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -237,7 +238,8 @@ class RewriteMixin:
             for pattern, repl in self._rewrite_rules:
                 if pattern.match(text) is not None:
                     try:
-                        return pattern.sub(repl, text)
+                        # the first occurrence is the match at the start
+                        return pattern.sub(repl, text, count=1)
                     except re.error as ex:
                         logging.error("cannot rewrite '%s': %s", text, ex)
                         break
@@ -291,6 +293,10 @@ class BarWidget(Gtk.Box):
     RELAX_INTERVAL = True
     # wake up at wall clock multiples of the interval
     ALIGN_INTERVAL = False
+    # updated only every interval, a warning is logged if it is not set
+    POLLING = False
+    # longest sleep of aligned widgets, see `sleep_interval()`
+    MAX_ALIGNED_SLEEP = 1.0
 
     def __init__(
         self, name: str, res_mgr: ResourceManager, cfg: dict[str, Any] | None = None
@@ -326,6 +332,11 @@ class BarWidget(Gtk.Box):
                 self._period = next_prime(int(interval * 1000)) / 1000
         else:
             self._period = 0.0
+
+            if self.POLLING:
+                logging.warning(
+                    "widget '%s' has no 'interval', it is never updated", name
+                )
 
         self.interval = interval
         # delay of wake-ups after the first one, a fraction of the period
@@ -368,7 +379,12 @@ class BarWidget(Gtk.Box):
 
         if self.ALIGN_INTERVAL:
             # wake up just after the boundary, never before it
-            await anyio.sleep(self._period - time.time() % self._period + 0.005)
+            target = (time.time() // self._period + 1) * self._period + 0.005
+
+            # the event loop clock stops while the system is suspended, the
+            # wall clock does not: sleep in steps to catch up soon after resume
+            while (remaining := target - time.time()) > 0:
+                await anyio.sleep(min(remaining, self.MAX_ALIGNED_SLEEP))
         else:
             now = anyio.current_time()
             # do not try to catch up if the widget fell behind

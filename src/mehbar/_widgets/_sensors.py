@@ -7,13 +7,23 @@ from mehbar.exceptions import BarConfigError
 
 def sensor_values(readings: Mapping[str, list[Any]]) -> dict[str, int]:
     """Maps psutil sensor readings to `<chip>/<label>` (or `<chip>`, if the
-    sensor has no label) -> current value."""
-    values = {}
+    sensor has no label) -> current value. Chips of the same name, e.g. two
+    NVMe drives, are merged by psutil: repeated selectors get a `#<n>`
+    suffix, `nvme/Composite`, `nvme/Composite#2`, in the order of hwmon
+    devices."""
+    values: dict[str, int] = {}
 
     for chip, entries in readings.items():
         for entry in entries:
             selector = f"{chip}/{entry.label}" if entry.label else chip
-            values[selector] = round(entry.current)
+            unique = selector
+            num = 1
+
+            while unique in values:
+                num += 1
+                unique = f"{selector}#{num}"
+
+            values[unique] = round(entry.current)
 
     return values
 

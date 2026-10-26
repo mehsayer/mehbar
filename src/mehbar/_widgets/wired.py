@@ -219,6 +219,7 @@ class WidgetWired(WidgetBase):
     the state: down, no link, connected."""
 
     TYPE = "wired"
+    POLLING = True
     UNIQUE = False
 
     BACKEND_MAP = {

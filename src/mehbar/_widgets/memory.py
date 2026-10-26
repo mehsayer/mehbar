@@ -3,6 +3,7 @@ from mehbar.widget import WidgetBase
 
 class WidgetMemoryUsage(WidgetBase):
     TYPE = "memory_usage"
+    POLLING = True
 
     async def run(self):
         from psutil import virtual_memory

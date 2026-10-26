@@ -9,10 +9,27 @@ from mehbar.resource_manager import ResourceManager
 from mehbar.widget import JSONInputMixin, WidgetBase
 
 
-def read_last_line(path: Path, chunk_size: int = 4096) -> str | None:
-    """Returns the last non-empty line of the file, reading from its end."""
+def _last_line(data: bytes) -> str | None:
+    tail = data.rstrip()
+    return tail[tail.rfind(b"\n") + 1 :].decode(errors="replace") or None
+
+
+def read_last_line(
+    path: Path, chunk_size: int = 4096, max_len: int = 64 * 1024
+) -> str | None:
+    """Returns the last non-empty line of the file, reading from its end.
+    Only the last `max_len` bytes of longer lines are returned."""
     with open(path, "rb") as fhandle:
-        end = fhandle.seek(0, os.SEEK_END)
+        try:
+            end = fhandle.seek(0, os.SEEK_END)
+        except OSError:  # e.g. procfs files that cannot seek to their end
+            end = 0
+
+        if end == 0:
+            # procfs and sysfs files have no size, read them from the start
+            fhandle.seek(0)
+            return _last_line(fhandle.read(16 * max_len))
+
         buff = b""
 
         while end > 0:
@@ -21,11 +38,14 @@ def read_last_line(path: Path, chunk_size: int = 4096) -> str | None:
             buff = fhandle.read(end - start) + buff
             end = start
 
-            lines = [ln for ln in buff.splitlines() if ln.strip()]
+            tail = buff.rstrip()
 
             # the first line may be incomplete unless the whole file is read
-            if len(lines) > 1 or (lines and end == 0):
-                return lines[-1].decode(errors="replace")
+            if b"\n" in tail or end == 0:
+                return _last_line(tail)
+
+            if len(tail) > max_len:
+                return tail[-max_len:].decode(errors="replace")
 
     return None
 
@@ -37,6 +57,7 @@ class WidgetFile(JSONInputMixin, WidgetBase):
     UNIQUE = False
     MAX_FAILURES = 10
     TYPE = "file"
+    POLLING = True
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)

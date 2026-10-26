@@ -9,6 +9,7 @@ class WidgetDateTime(WidgetBase):
     clock multiples of the interval, e.g. on the minute for 60 seconds."""
 
     TYPE = "datetime"
+    POLLING = True
     RELAX_INTERVAL = False
     ALIGN_INTERVAL = True
 

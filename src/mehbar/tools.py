@@ -1,5 +1,6 @@
 import argparse
 import logging
+import math
 import os
 import string
 import sys
@@ -85,8 +86,14 @@ class ArgumentsHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
 
 
 class FormattableTimeDelta:
+    """A duration formatted with `strftime()`-like directives. Negative
+    durations are formatted as zero."""
+
     def __init__(self, seconds: float | int):
-        self.tot_secs = int(seconds)
+        if not math.isfinite(seconds):
+            raise ValueError(f"not a finite duration: {seconds}")
+
+        self.tot_secs = max(int(seconds), 0)
         self.tot_mins, self.secs = divmod(self.tot_secs, 60)
         self.tot_hrs, self.mins = divmod(self.tot_mins, 60)
         self.days, self.hrs = divmod(self.tot_hrs, 24)
@@ -133,6 +140,8 @@ class FormattableTimeDelta:
                             push("%d" % self.days)
                         case "D":
                             push("%02d" % self.days)
+                        case "%":
+                            push("%")
                         case _:
                             push("%")
                             push(ch)

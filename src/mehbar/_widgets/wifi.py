@@ -22,6 +22,8 @@ class WidgetWifi(WidgetBase):
     MAX_SIGNAL = 100
 
     TYPE = "wifi"
+    POLLING = True
+    UNIQUE = False
 
     BACKEND_MAP = {
         "NetworkManager": NetworkManagerBackend,

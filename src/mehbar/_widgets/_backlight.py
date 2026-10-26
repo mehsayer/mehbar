@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
+from gi.repository import GLib  # type: ignore
+
+from ._dbus_facade import DBusFacade
 
 # References:
 # https://docs.kernel.org/admin-guide/abi-stable.html#
@@ -223,6 +226,22 @@ class BacklightInterface:
         return await self.close()
 
 
+class LogindSession(DBusFacade):
+    BASE_SVC = "org.freedesktop.login1"
+    SESSION_OBJ = "/org/freedesktop/login1/session/auto"
+    SESSION_IFACE = "org.freedesktop.login1.Session"
+
+    def set_brightness(self, device: str, level: int):
+        """Sets the brightness of a backlight device without write access to
+        it. Blocks, call it in a worker thread."""
+        self.call(
+            self.SESSION_OBJ,
+            self.SESSION_IFACE,
+            "SetBrightness",
+            GLib.Variant("(ssu)", ("backlight", device, level)),
+        )
+
+
 class BacklightACPI(BacklightInterface):
     PATH_BL = "/sys/class/backlight"
     PATH_I2C_BUS = "/sys/bus/i2c/devices/"
@@ -233,6 +252,8 @@ class BacklightACPI(BacklightInterface):
         super().__init__(disp)
         self.device = None
         self.fd = -1
+        # -1 if brightness is set by logind
+        self.wr_fd: int | None = None
 
     async def _get_scale_sync(self, dir_bl: Path | str) -> tuple[int, float]:
         mul = 0.0
@@ -359,22 +380,63 @@ class BacklightACPI(BacklightInterface):
             self.device = device
 
         if self.fd < 0:
-            self.fd = os.open(self.device.path / "brightness", os.O_RDWR)
-        # TODO: Get level from actual_brightness
+            # writing usually needs a udev rule, logind is used otherwise
+            self.fd = os.open(self.device.path / "brightness", os.O_RDONLY)
+
+    def _get_raw(self) -> int:
+        buff = os.pread(self.fd, 16, 0)
+        return int(buff.decode("ascii").strip() or 0)
+
+    async def _set_raw(self, raw: int):
+        if self.device is None:
+            return
+
+        raw = max(0, min(raw, int(self.device.max_level)))
+
+        if self.wr_fd is None:
+            try:
+                self.wr_fd = os.open(self.device.path / "brightness", os.O_WRONLY)
+            except PermissionError:
+                self.wr_fd = -1
+
+        if self.wr_fd >= 0:
+            os.pwrite(self.wr_fd, str(raw).encode(), 0)
+        else:
+            await anyio.to_thread.run_sync(
+                LogindSession().set_brightness, self.device.path.name, raw
+            )
 
     async def get_level(self) -> float:
-        level = 0.0
-
-        if buff := os.pread(self.fd, 16, 0):
-            val = buff.decode("ascii").strip()
-            level = int(val) / self.device.mul
-
-        return level
+        if self.device is None:
+            return 0.0
+        return self._get_raw() / self.device.mul
 
     async def set_level(self, value: int | float):
         if self.device is not None:
-            val = int(max(0, min(value * self.device.mul, self.device.mul * 100)))
-            os.pwrite(self.fd, str(val).encode(), 0)
+            await self._set_raw(round(value * self.device.mul))
+
+    async def change_level(self, delta: int | float) -> float:
+        """Steps by at least one hardware level, panels may have as few as
+        ten. Returns the new level."""
+        if self.device is None:
+            return 0.0
+
+        raw = self._get_raw()
+        target = round(raw + delta * self.device.mul)
+
+        if target == raw and delta != 0:
+            target = raw + (1 if delta > 0 else -1)
+
+        target = max(0, min(target, int(self.device.max_level)))
+        await self._set_raw(target)
+
+        return target / self.device.mul
+
+    async def close(self):
+        if self.wr_fd is not None and self.wr_fd >= 0:
+            os.close(self.wr_fd)
+        self.wr_fd = None
+        await super().close()
 
 
 class BacklightDDCCI(BacklightInterface):

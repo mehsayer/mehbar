@@ -157,8 +157,7 @@ class WidgetPlayerCtl(BarWidget):
         for player_name in self.manager.props.player_names:
             self._init_player(player_name)
 
-        if self.player is None:
-            self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
+        self._select(self._best_player())
 
         GLib.timeout_add(tick_ms, self.guard(self._tick))
 
@@ -285,9 +284,12 @@ class WidgetPlayerCtl(BarWidget):
 
     # Players
 
-    def _init_player(self, player_name: Playerctl.PlayerName):
+    def _init_player(
+        self, player_name: Playerctl.PlayerName
+    ) -> Playerctl.Player | None:
+        """Starts managing the player, unless it is filtered out."""
         if self.player_names and player_name.name not in self.player_names:
-            return
+            return None
 
         player = Playerctl.Player.new_from_name(player_name)
 
@@ -298,12 +300,34 @@ class WidgetPlayerCtl(BarWidget):
         player.connect("shuffle", self.guard(self._on_shuffle))
         self.manager.manage_player(player)
 
-        props = player.props
-
-        if not props.can_control:
+        if not player.props.can_control:
             logging.warning("player %s cannot be controlled", player_name.name)
 
+        return player
+
+    def _best_player(
+        self, exclude: Playerctl.Player | None = None
+    ) -> Playerctl.Player | None:
+        """A playing player, otherwise a paused one, otherwise any."""
+        players = [p for p in self.manager.props.players if p is not exclude]
+        order = (Playerctl.PlaybackStatus.PLAYING, Playerctl.PlaybackStatus.PAUSED)
+
+        for status in order:
+            for player in players:
+                if player.props.playback_status == status:
+                    return player
+
+        return players[0] if players else None
+
+    def _select(self, player: Playerctl.Player | None):
+        """Shows the player, all of its state."""
         self.player = player
+
+        if player is None:
+            self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
+            return
+
+        props = player.props
 
         self._on_metadata(player, props.metadata)
         self._on_volume(player, props.volume)
@@ -311,21 +335,19 @@ class WidgetPlayerCtl(BarWidget):
         self._on_status(player, props.playback_status)
 
     def _on_name_appeared(self, _manager, player_name: Playerctl.PlayerName):
-        self._init_player(player_name)
-
-    def _on_player_vanished(self, manager, player: Playerctl.Player):
-        if player is not self.player:
+        if (player := self._init_player(player_name)) is None:
             return
 
-        self.player = None
+        # do not let e.g. a stopped browser tab hide the playing player
+        if (
+            self.player is None
+            or player.props.playback_status == Playerctl.PlaybackStatus.PLAYING
+        ):
+            self._select(player)
 
-        if manager.props.players:
-            # switch to another managed player
-            self.player = manager.props.players[0]
-            self._on_metadata(self.player, self.player.props.metadata)
-            self._on_status(self.player, self.player.props.playback_status)
-        else:
-            self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
+    def _on_player_vanished(self, _manager, player: Playerctl.Player):
+        if player is self.player:
+            self._select(self._best_player(exclude=player))
 
     def _player_call(self, method: str, *args):
         if self.player is not None:
@@ -380,11 +402,10 @@ class WidgetPlayerCtl(BarWidget):
         self, player: Playerctl.Player | None, status: Playerctl.PlaybackStatus
     ):
         if player is not None and player is not self.player:
-            if status != Playerctl.PlaybackStatus.PLAYING:
-                return
-            # follow the player that started playing
-            self.player = player
-            self._on_metadata(player, player.props.metadata)
+            if status == Playerctl.PlaybackStatus.PLAYING:
+                # follow the player that started playing
+                self._select(player)
+            return
 
         self._t_last = -1
 

@@ -11,9 +11,10 @@ class WidgetNetworkRate(WidgetBase):
     """Shows transfer rates of the `iface` network interface, or all
     interfaces. `conv_map` maps unit names to their size in bytes."""
 
-    DEFAULT_CONVERSIONS = {"Kb/s": 1024, "Mb/s": 1024**2, "b/s": 1}
+    DEFAULT_CONVERSIONS = {"KiB/s": 1024, "MiB/s": 1024**2, "B/s": 1}
     UNIQUE = False
     TYPE = "network_rate"
+    POLLING = True
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
@@ -35,7 +36,8 @@ class WidgetNetworkRate(WidgetBase):
             if (value := int(rate_bytes // divisor)) > 0:
                 return value, unit
 
-        return rate_bytes, self.conv_map[-1][0]
+        unit, divisor = self.conv_map[-1]
+        return int(rate_bytes // divisor), unit
 
     def _read(self):
         import psutil

@@ -153,6 +153,7 @@ class WidgetBattery(WidgetBase):
 
     MAX_CHARGE = 100
     TYPE = "battery"
+    POLLING = True
 
     def ramp_index(self, ramp_level: int) -> int | None:
         if ramp_level < 0 or not self.ramp:

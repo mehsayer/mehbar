@@ -325,7 +325,8 @@ class ResourceManager:
     def _resolve_color_scheme(
         self, color_scheme: str | None, *cfgs: dict[str, Any]
     ) -> str:
-        if color_scheme not in self.COLOR_SCHEMES:
+        # 'system' on the command line overrides configuration files too
+        if color_scheme is None:
             # the configuration with the highest precedence wins
             for cfg in reversed(cfgs):
                 if (cs := cfg.get("bar", {}).get("color_scheme")) is not None:

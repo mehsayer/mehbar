@@ -237,6 +237,10 @@ class UnmanagedBackend(WifiInfoQuery):
                                 pass
                             break
 
+            # the level is 0 while disconnected, it is negative in dBm otherwise
+            if rssi is not None and rssi >= 0:
+                rssi = None
+
         return WifiInfo(iface, None, rssi, None)
 
 

@@ -5,6 +5,7 @@ from mehbar.widget import WidgetBase
 
 class WidgetCPUFrequency(WidgetBase):
     TYPE = "cpu_fq"
+    POLLING = True
 
     async def run(self):
         from psutil import cpu_freq

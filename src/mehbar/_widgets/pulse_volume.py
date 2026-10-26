@@ -7,6 +7,7 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pulsectl import PulseDisconnected, PulseError, PulseIndexError
 from pulsectl_asyncio import PulseAsync
 
+from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
 from mehbar.tools import describe_exception
 from mehbar.widget import WidgetBase
@@ -37,10 +38,16 @@ class WidgetPulseVolume(WidgetBase):
         self.sink_name = self.cfg.get("sink_name", "@DEFAULT_SINK@")
 
         max_volume_ = self.cfg.get("max_volume", self.DEFAULT_VOLUME)
+        vol_delta = self.cfg.get("volume_delta", self.DEFAULT_DELTA)
+
+        if not isinstance(max_volume_, (int, float)):
+            raise BarConfigError("'max_volume' must be a number")
+
+        if not isinstance(vol_delta, (int, float)) or not 0 < vol_delta <= 100:
+            raise BarConfigError("'volume_delta' must be a number in 1..100")
 
         self.max_volume = max(min(max_volume_, self.MAX_VOLUME), self.MIN_VOLUME)
-
-        self.vol_delta = self.cfg.get("volume_delta", self.DEFAULT_DELTA) / 100
+        self.vol_delta = vol_delta / 100
 
         self._sstream: ObjectSendStream[float | None] | None = None
 

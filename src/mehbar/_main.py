@@ -48,8 +48,13 @@ except ValueError as ex:
     sys.exit(1)
 
 # The Vulkan renderer gains nothing on a bar, and the NVIDIA driver reports
-# VK_SUBOPTIMAL_KHR for the first frames of every new surface, which GTK logs
-os.environ.setdefault("GSK_RENDERER", "gl")
+# VK_SUBOPTIMAL_KHR for the first frames of every new surface, which GTK logs.
+# Programs started by the bar do not inherit it.
+from .tools import OWN_ENVIRON
+
+if "GSK_RENDERER" not in os.environ:
+    os.environ["GSK_RENDERER"] = "gl"
+    OWN_ENVIRON.add("GSK_RENDERER")
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
@@ -89,10 +94,18 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         self._worker: threading.Thread | None = None
         self._cancel_scope: anyio.CancelScope | None = None
+        # checked by the worker, in case it is stopped before it has started
+        self._stop_requested = threading.Event()
 
         bar_cfg = self.res_mgr.bar_cfg
 
-        is_homogenous = bool(bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS))
+        # GTK spells it 'homogeneous', the misspelling is still accepted
+        is_homogenous = bar_cfg.get(
+            "homogeneous", bar_cfg.get("homogenous", self.DEFAULT_HOMOGENOUS)
+        )
+
+        if not isinstance(is_homogenous, bool):
+            raise BarConfigError("'homogeneous' must be true or false")
 
         self._setup_layer_shell(bar_cfg)
         self._load_css()
@@ -127,7 +140,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
     def _setup_layer_shell(self, bar_cfg: dict):
         position = bar_cfg.get("position", self.DEFAULT_ANCHOR)
-        if (anchor := self.ANCHOR_MAP.get(position)) is None:
+        if (
+            not isinstance(position, str)
+            or (anchor := self.ANCHOR_MAP.get(position)) is None
+        ):
             logging.warning("unknown bar position '%s'", position)
             position = self.DEFAULT_ANCHOR
             anchor = self.ANCHOR_MAP[position]
@@ -135,16 +151,19 @@ class MehBarGUI(Gtk.ApplicationWindow):
         self.position = position
 
         layer_name = bar_cfg.get("layer", self.DEFAULT_LAYER)
-        if (layer := self.LAYER_MAP.get(layer_name)) is None:
+        if (
+            not isinstance(layer_name, str)
+            or (layer := self.LAYER_MAP.get(layer_name)) is None
+        ):
             logging.warning("unknown bar layer '%s'", layer_name)
             layer = self.LAYER_MAP[self.DEFAULT_LAYER]
 
         height = bar_cfg.get("height", self.MIN_HEIGHT)
-        if not isinstance(height, int) or height < 1:
+        if not isinstance(height, int) or isinstance(height, bool) or height < 1:
             raise BarConfigError("bar height must be a positive integer")
 
         width = bar_cfg.get("width", 0)
-        if not isinstance(width, int):
+        if not isinstance(width, int) or isinstance(width, bool):
             raise BarConfigError("bar width must be an integer")
 
         gaps = bar_cfg.get("gaps", [0, 0, 0, 0])
@@ -212,12 +231,16 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         widget_cls = _widgets.get_widget_class(wtype)
 
+        if widget_cls.UNIQUE and wtype in unique_types:
+            raise BarConfigError(f"widget of type '{wtype}' must be unique")
+
+        widget = widget_cls(name, self.res_mgr)
+
+        # a widget that failed to start does not count
         if widget_cls.UNIQUE:
-            if wtype in unique_types:
-                raise BarConfigError(f"widget of type '{wtype}' must be unique")
             unique_types.add(wtype)
 
-        return widget_cls(name, self.res_mgr)
+        return widget
 
     def _create_widgets(self) -> list[tuple[str, BarWidget]]:
         widgets = []
@@ -250,10 +273,13 @@ class MehBarGUI(Gtk.ApplicationWindow):
         )
         self._worker.start()
 
-    def stop_widgets(self):
-        """Cancels widget tasks and waits for the event loop to finish."""
+    def stop_widgets(self) -> bool:
+        """Cancels widget tasks and waits for the event loop to finish.
+        Returns `False` if it did not finish in time."""
         if self._worker is None or not self._worker.is_alive():
-            return
+            return True
+
+        self._stop_requested.set()
 
         if (scope := self._cancel_scope) is not None:
             self.res_mgr.loop.call_soon(scope.cancel)
@@ -262,12 +288,23 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         if self._worker.is_alive():
             logging.warning("widgets did not stop in %d seconds", self.STOP_TIMEOUT)
+            return False
+
+        return True
 
     def _worker_main(self):
         try:
             anyio.run(self._run_widgets, backend="asyncio")
         except Exception as ex:
             logging.critical("widget event loop failed: %s", describe_exception(ex))
+            # a bar that silently stopped updating is worse than no bar
+            GLib.idle_add(self._quit_on_failure)
+
+    def _quit_on_failure(self) -> bool:
+        if (app := self.get_application()) is not None:
+            app.exit_status = os.EX_SOFTWARE
+            app.quit()
+        return GLib.SOURCE_REMOVE
 
     async def _run_widgets(self):
         self.res_mgr.loop.attach()
@@ -275,6 +312,9 @@ class MehBarGUI(Gtk.ApplicationWindow):
         try:
             async with anyio.create_task_group() as grp:
                 self._cancel_scope = grp.cancel_scope
+
+                if self._stop_requested.is_set():
+                    grp.cancel_scope.cancel()
 
                 for name, widget in self.widgets:
                     grp.start_soon(self._run_widget, widget, name=name)
@@ -307,6 +347,7 @@ class MehBar(Gtk.Application):
         self.color_scheme = color_scheme
         self.win: MehBarGUI | None = None
         self.exit_status = os.EX_OK
+        self.widgets_stopped = True
 
     def do_activate(self):
         if self.win is not None:
@@ -336,7 +377,7 @@ class MehBar(Gtk.Application):
 
     def do_shutdown(self):
         if self.win is not None:
-            self.win.stop_widgets()
+            self.widgets_stopped = self.win.stop_widgets()
         Gtk.Application.do_shutdown(self)
 
 
@@ -354,5 +395,20 @@ def entrypoint(**kwargs) -> int:
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _quit)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _quit)
 
-    status = app.run()
-    return status or app.exit_status
+    # the application ID is unique: a second instance would only activate the
+    # running one, ignoring its own options
+    app.register(None)
+
+    if app.get_is_remote():
+        logging.warning("mehbar is already running, stop it to apply new options")
+        return os.EX_OK
+
+    status = app.run() or app.exit_status
+
+    if not app.widgets_stopped:
+        # the widget thread may be inside native code, e.g. of pulsectl, do
+        # not finalize the interpreter under it
+        logging.shutdown()
+        os._exit(status)
+
+    return status
