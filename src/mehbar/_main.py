@@ -126,7 +126,10 @@ class MehBarGUI(Gtk.ApplicationWindow):
             raise BarConfigError("'homogeneous' must be true or false")
 
         self._setup_layer_shell(bar_cfg)
+
+        self._css_providers: list[Gtk.CssProvider] = []
         self._load_css()
+        self._follow_color_scheme()
 
         self.main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         self.main_box.set_homogeneous(is_homogeneous)
@@ -217,8 +220,38 @@ class MehBarGUI(Gtk.ApplicationWindow):
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, True)
             self.set_default_size(-1, height)
 
+    def _follow_color_scheme(self):
+        if not self.res_mgr.follows_desktop:
+            return
+
+        def _changed(*_):
+            if self.res_mgr.update_color_scheme():
+                logging.info("color scheme changed to '%s'", self.res_mgr.color_scheme)
+                self._load_css()
+
+        # GTK 4.20 follows the color scheme of the desktop portal or GSettings
+        settings = Gtk.Settings.get_default()
+        for prop in ("gtk-interface-color-scheme", "gtk-application-prefer-dark-theme"):
+            if settings.find_property(prop) is not None:
+                settings.connect(f"notify::{prop}", _changed)
+
+        schema_name = "org.gnome.desktop.interface"
+        source = Gio.SettingsSchemaSource.get_default()
+
+        if source is not None and (schema := source.lookup(schema_name, True)):
+            if schema.has_key("color-scheme"):
+                # kept, signals stop with the last reference
+                self._gsettings = Gio.Settings.new(schema_name)
+                self._gsettings.connect("changed::color-scheme", _changed)
+
     def _load_css(self):
+        """Loads the style sheets of the color scheme, replacing loaded ones."""
         display = Gdk.Display.get_default()
+
+        for provider in self._css_providers:
+            Gtk.StyleContext.remove_provider_for_display(display, provider)
+
+        self._css_providers.clear()
 
         # later style sheets take precedence
         for prio, (label, css) in enumerate(self.res_mgr.get_css()):
@@ -240,6 +273,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + prio
             )
+            self._css_providers.append(provider)
 
     def _new_widget(self, name: str, unique_types: set[str]) -> BarWidget:
         widget_cfg = self.res_mgr.get_cfg_for_name(name)

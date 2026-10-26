@@ -1,11 +1,15 @@
 """Weather providers. They are synchronous, call them in a worker thread."""
 
 import enum
+import hashlib
 import json
+import logging
 import math
+import os
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from mehbar import __version__
@@ -278,6 +282,53 @@ class OpenWeatherMap(Provider):
             speed,
             wind.get("deg"),
         )
+
+
+class WeatherCache:
+    """The latest weather of a location, saved to a file, so that restarts
+    of the bar do not repeat requests."""
+
+    def __init__(self, directory: Path, *key: Any):
+        digest = hashlib.sha256(repr(key).encode()).hexdigest()[:16]
+        self.path = directory / f"weather-{digest}.json"
+
+    def load(self) -> tuple[float, Weather, str, tuple[float, float]] | None:
+        """Returns the time of the request, the weather, the location name
+        and coordinates."""
+        try:
+            data = json.loads(self.path.read_text())
+            lat, lon = data["coords"]
+            weather = Weather(
+                **(
+                    data["weather"]
+                    | {"condition": Condition(data["weather"]["condition"])}
+                )
+            )
+            return data["time"], weather, data["location"], (lat, lon)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def save(
+        self,
+        time: float,
+        weather: Weather,
+        location: str,
+        coords: tuple[float, float] | None,
+    ):
+        data = {
+            "time": time,
+            "weather": asdict(weather),
+            "location": location,
+            "coords": coords,
+        }
+        tmp_path = self.path.with_suffix(".tmp")
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(data))
+            os.replace(tmp_path, self.path)
+        except OSError as ex:
+            logging.debug("cannot save the weather to '%s': %s", self.path, ex)
 
 
 PROVIDERS: dict[str, type[Provider]] = {

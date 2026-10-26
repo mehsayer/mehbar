@@ -186,6 +186,51 @@ popover.bar-tooltip-popover > contents {
     padding-right: 0.5ex;
 }
 
+/* the calendar of the datetime tooltip, it follows the GTK theme otherwise */
+
+calendar.bar-tooltip {
+    color: @tn_fg;
+    background-color: @tn_bg_dark;
+    border: none;
+    padding: 4px;
+}
+
+calendar.bar-tooltip > header {
+    color: @tn_fg;
+    background: none;
+    border: none;
+}
+
+calendar.bar-tooltip > header > button {
+    color: @tn_fg_dark;
+    background: none;
+    border: none;
+    box-shadow: none;
+}
+
+calendar.bar-tooltip > header > button:hover {
+    color: @tn_blue;
+}
+
+calendar.bar-tooltip > grid > label.day-name,
+calendar.bar-tooltip > grid > label.week-number {
+    color: @tn_fg_dark;
+}
+
+calendar.bar-tooltip > grid > label.other-month {
+    color: @tn_comment;
+}
+
+calendar.bar-tooltip > grid > label.today {
+    color: @tn_blue;
+}
+
+calendar.bar-tooltip > grid > label:selected {
+    color: @tn_bg_dark;
+    background-color: @tn_blue;
+    border-radius: 4px;
+}
+
 /* State classes for ramps, on the widget, the label or the icon. On the
    widget, they must win over the widget type rules above. */
 

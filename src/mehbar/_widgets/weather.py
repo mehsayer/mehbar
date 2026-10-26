@@ -1,14 +1,23 @@
 import logging
+import time
 import urllib.error
 
 import anyio
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.tools import describe_exception
+from mehbar.tools import describe_exception, get_cache_home
 from mehbar.widget import WidgetBase
 
-from ._weather import PROVIDERS, Condition, Units, Weather, compass, geocode
+from ._weather import (
+    PROVIDERS,
+    Condition,
+    Units,
+    Weather,
+    WeatherCache,
+    compass,
+    geocode,
+)
 
 
 class WidgetWeather(WidgetBase):
@@ -16,15 +25,17 @@ class WidgetWeather(WidgetBase):
     `latitude` and `longitude`, from the `provider`. Ramp entries are for
     conditions: clear, partly cloudy, cloudy, fog, drizzle, rain, snow,
     thunderstorm; eight more entries, if given, are for the same conditions
-    at night. The widget is hidden until the first forecast arrives."""
+    at night. The widget is hidden until the first forecast arrives.
+
+    Requests are made at most every `FETCH_INTERVAL` seconds, also across
+    restarts of the bar: shorter intervals show the cached weather."""
 
     TYPE = "weather"
     POLLING = True
     UNIQUE = False
 
-    MIN_INTERVAL = 60
-    # retries of failed updates, until the next update is due
-    RETRY_DELAY = 60
+    # seconds between requests, failed ones included
+    FETCH_INTERVAL = 15 * 60
 
     FMT_FIELDS = [
         "temp",
@@ -88,15 +99,16 @@ class WidgetWeather(WidgetBase):
                 "'location', or 'latitude' and 'longitude', must be set"
             )
 
-        if 0 < self.interval < self.MIN_INTERVAL:
-            raise BarConfigError(f"'interval' must be at least {self.MIN_INTERVAL}")
-
         if unknown := set(self.label_fields()) - set(self.FMT_FIELDS):
             raise BarConfigError(f"unknown label fields: {', '.join(sorted(unknown))}")
 
-        self._shown = False
+        self.cache = WeatherCache(get_cache_home(), provider, location, lat, lon, units)
+
+        # wall clock time, which counts while the system is suspended
+        self._fetched_at = 0.0
+        self._weather: Weather | None = None
         self._failing = False
-        self.set_visible(False)
+        self.set_available_i(False)
 
     def ramp_index(self, ramp_level: int) -> int | None:
         if ramp_level < 0 or not self.ramp:
@@ -143,33 +155,41 @@ class WidgetWeather(WidgetBase):
             speed_unit=self.units.speed,
         )
 
-        if not self._shown:
-            self._shown = True
-            self.set_visible_i(True)
+        self.set_available_i(True)
+
+    async def _update(self):
+        """Requests the weather, unless the latest request is recent."""
+        now = time.time()
+
+        if now - self._fetched_at < self.FETCH_INTERVAL:
+            return
+
+        self._fetched_at = now
+
+        try:
+            weather = await anyio.to_thread.run_sync(self._fetch)
+        except self.FETCH_ERRORS as ex:
+            # e.g. offline: the last weather stays until the next request
+            if not self._failing:
+                self._failing = True
+                logging.warning(
+                    "widget '%s': cannot get the weather: %s",
+                    self.widget_name,
+                    describe_exception(ex),
+                )
+            return
+
+        self._failing = False
+        self._weather = weather
+        await anyio.to_thread.run_sync(
+            self.cache.save, now, weather, self._location, self._coords
+        )
+        self._show(weather)
 
     async def run(self):
+        if (cached := await anyio.to_thread.run_sync(self.cache.load)) is not None:
+            self._fetched_at, self._weather, self._location, self._coords = cached
+            self._show(self._weather)
+
         while await self.sleep_interval():
-            give_up = anyio.current_time() + self._period - self.RETRY_DELAY
-
-            while True:
-                try:
-                    weather = await anyio.to_thread.run_sync(self._fetch)
-                except self.FETCH_ERRORS as ex:
-                    # e.g. offline: the last forecast stays
-                    if not self._failing:
-                        self._failing = True
-                        logging.warning(
-                            "widget '%s': cannot get the weather: %s",
-                            self.widget_name,
-                            describe_exception(ex),
-                        )
-
-                    if anyio.current_time() + self.RETRY_DELAY > give_up:
-                        break
-
-                    await anyio.sleep(self.RETRY_DELAY)
-                    continue
-
-                self._failing = False
-                self._show(weather)
-                break
+            await self._update()

@@ -179,6 +179,12 @@ def get_config_home() -> Path:
     return Path.home() / ".config" / "mehbar"
 
 
+def get_cache_home() -> Path:
+    if cache_home := os.getenv("XDG_CACHE_HOME"):
+        return Path(cache_home) / "mehbar"
+    return Path.home() / ".cache" / "mehbar"
+
+
 @lru_cache(maxsize=256)
 def _parse_format(format_string: str) -> tuple[tuple[str, str | None, str, str], ...]:
     return tuple(string.Formatter().parse(format_string))

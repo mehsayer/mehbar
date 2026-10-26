@@ -143,3 +143,43 @@ def test_weather_widget_options(make_res_mgr):
         _make("")
     with pytest.raises(BarConfigError, match="unknown label fields"):
         _make('location = "Berlin"\nlabel = "{pressure}"')
+
+
+@pytest.mark.display
+def test_weather_requests_are_cached(make_res_mgr, tmp_path, monkeypatch):
+    import anyio
+
+    from mehbar._widgets import weather as weather_module
+    from mehbar._widgets._weather import Weather
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    requests = []
+
+    def _fetch(self, lat, lon):
+        requests.append((lat, lon))
+        return Weather(Condition.CLEAR, True, 20.0)
+
+    monkeypatch.setattr(OpenMeteo, "fetch", _fetch)
+    clock = [1000.0]
+    monkeypatch.setattr(weather_module.time, "time", lambda: clock[0])
+
+    def _widget():
+        res_mgr = make_res_mgr(
+            '[end.w]\ntype = "weather"\ninterval = 60\nlatitude = 47.27\nlongitude = 11.39'
+        )
+        return weather_module.WidgetWeather("w", res_mgr)
+
+    widget = _widget()
+    anyio.run(widget._update)
+    clock[0] += 60
+    anyio.run(widget._update)
+    assert len(requests) == 1
+
+    clock[0] += 15 * 60
+    anyio.run(widget._update)
+    assert len(requests) == 2
+
+    # a restarted bar uses the cached weather
+    restarted = _widget()
+    cached = restarted.cache.load()
+    assert cached is not None and cached[1].temp == 20.0

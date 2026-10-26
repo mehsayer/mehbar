@@ -335,12 +335,31 @@ class ResourceManager:
                     color_scheme = cs
                     break
 
-        if color_scheme not in self.COLOR_SCHEMES:
+        # otherwise the color scheme of the desktop is used
+        self.follows_desktop = color_scheme not in self.COLOR_SCHEMES
+
+        if self.follows_desktop:
             if color_scheme not in (None, "system"):
                 logging.warning("unknown color scheme '%s'", color_scheme)
             color_scheme = detect_color_scheme() or self.DEFAULT_COLOR_SCHEME
 
         return color_scheme
+
+    def update_color_scheme(self) -> bool:
+        """Follows a change of the color scheme of the desktop, if it is not
+        set by the command line or configuration. Returns whether the color
+        scheme changed. Style sheets follow it, configuration overlays need
+        a restart."""
+        if not self.follows_desktop:
+            return False
+
+        color_scheme = detect_color_scheme() or self.DEFAULT_COLOR_SCHEME
+
+        if color_scheme == self._color_scheme:
+            return False
+
+        self._color_scheme = color_scheme
+        return True
 
     def _parse_cfg(
         self, data: bytes, modules: tuple[str, ...], label: str

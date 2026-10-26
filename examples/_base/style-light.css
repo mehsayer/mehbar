@@ -1,0 +1,18 @@
+/*
+ * The light variant of the base theme, for the light color scheme: the same
+ * rules as style.css, with a light palette.
+ */
+
+@define-color mb_bg #f4f4f5;
+@define-color mb_bg_dark #e8e8eb;
+@define-color mb_bg_highlight #dcdce0;
+@define-color mb_border #c8c8ce;
+@define-color mb_dim #9a9aa2;
+@define-color mb_fg_dark #6b6b74;
+@define-color mb_fg #2e2e33;
+@define-color mb_fg_bright #18181b;
+@define-color mb_blue #2f6fb5;
+@define-color mb_magenta #8a4fb0;
+@define-color mb_green #3d8a2f;
+@define-color mb_yellow #a06b00;
+@define-color mb_red #c4323f;

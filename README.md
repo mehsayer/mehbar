@@ -263,11 +263,12 @@ Notes:
     openweathermap.org.
 
   `location` is a place name, looked up with the Open-Meteo geocoding API.
-  `units` are `metric`, the default, or `imperial`. The `interval` must be
-  at least 60 seconds, e.g. 900. Ramp entries are for the conditions clear,
-  partly cloudy, cloudy, fog, drizzle, rain, snow and thunderstorm; eight
-  more entries, if given, are used at night. Failed updates are retried
-  every minute, the last forecast stays meanwhile:
+  `units` are `metric`, the default, or `imperial`. The weather is
+  requested at most every 15 minutes, failed requests included, also across
+  restarts of the bar: it is cached in `$XDG_CACHE_HOME/mehbar`, and shorter
+  intervals show the cached weather. Ramp entries are for the conditions
+  clear, partly cloudy, cloudy, fog, drizzle, rain, snow and thunderstorm;
+  eight more entries, if given, are used at night:
 
   ```toml
   [end.weather]
