@@ -150,8 +150,9 @@ class WidgetPlayerCtl(BarWidget):
         self.add_css_class("playerctl")
 
         self.manager = Playerctl.PlayerManager()
-        self.manager.connect("name-appeared", self._on_name_appeared)
-        self.manager.connect("player-vanished", self._on_player_vanished)
+        # errors in GLib callbacks disable the widget
+        self.manager.connect("name-appeared", self.guard(self._on_name_appeared))
+        self.manager.connect("player-vanished", self.guard(self._on_player_vanished))
 
         for player_name in self.manager.props.player_names:
             self._init_player(player_name)
@@ -159,7 +160,7 @@ class WidgetPlayerCtl(BarWidget):
         if self.player is None:
             self._on_status(None, Playerctl.PlaybackStatus.STOPPED)
 
-        GLib.timeout_add(tick_ms, self._tick)
+        GLib.timeout_add(tick_ms, self.guard(self._tick))
 
     def _button(
         self,
@@ -272,7 +273,7 @@ class WidgetPlayerCtl(BarWidget):
             scroll_ctrl = Gtk.EventControllerScroll.new(
                 Gtk.EventControllerScrollFlags.VERTICAL
             )
-            scroll_ctrl.connect("scroll", _scroll)
+            scroll_ctrl.connect("scroll", self.guard(_scroll))
             viewport.add_controller(scroll_ctrl)
             scroll_view.set_child(viewport)
         else:
@@ -290,11 +291,11 @@ class WidgetPlayerCtl(BarWidget):
 
         player = Playerctl.Player.new_from_name(player_name)
 
-        player.connect("playback-status", self._on_status)
-        player.connect("metadata", self._on_metadata)
-        player.connect("volume", self._on_volume)
-        player.connect("seeked", self._on_seek)
-        player.connect("shuffle", self._on_shuffle)
+        player.connect("playback-status", self.guard(self._on_status))
+        player.connect("metadata", self.guard(self._on_metadata))
+        player.connect("volume", self.guard(self._on_volume))
+        player.connect("seeked", self.guard(self._on_seek))
+        player.connect("shuffle", self.guard(self._on_shuffle))
         self.manager.manage_player(player)
 
         props = player.props

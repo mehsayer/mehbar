@@ -1,10 +1,12 @@
-import anyio
+from i3ipc import Event, WindowEvent
 
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import RewriteMixin, WidgetBase
 
+from ._i3 import I3Connection, I3WidgetMixin
 
-class WidgetI3Window(RewriteMixin, WidgetBase):
+
+class WidgetI3Window(I3WidgetMixin, RewriteMixin, WidgetBase):
     """Shows the title of the focused window as the `title` field. Unless
     `always_show` is set, the widget is hidden when no window is focused."""
 
@@ -26,15 +28,11 @@ class WidgetI3Window(RewriteMixin, WidgetBase):
         self.set_new_content_i(title=self.rewrite(title) if title else "")
         self.set_visible_i(self.always_show or title is not None)
 
-    async def run(self):
-        from i3ipc import Event, WindowEvent
-
-        i3_conn = await self.res_mgr.get_i3_connection_async()
-
+    async def i3_start(self, conn: I3Connection):
         async def _show_focused():
-            self._show_window((await i3_conn.get_tree()).find_focused())
+            self._show_window((await conn.get_tree()).find_focused())
 
-        async def _callback_window(_, event: WindowEvent):
+        async def _callback_window(event: WindowEvent):
             match event.change:
                 case "focus":
                     self._show_window(event.container)
@@ -45,17 +43,11 @@ class WidgetI3Window(RewriteMixin, WidgetBase):
                     # the focus may have moved to another window, or nowhere
                     await _show_focused()
 
-        async def _callback_workspace(*_):
+        async def _callback_workspace(_event):
             # e.g. an empty workspace is focused
             await _show_focused()
 
+        self.i3_on(conn, Event.WINDOW, _callback_window)
+        self.i3_on(conn, Event.WORKSPACE_FOCUS, _callback_workspace)
+
         await _show_focused()
-
-        i3_conn.on(Event.WINDOW, _callback_window)
-        i3_conn.on(Event.WORKSPACE_FOCUS, _callback_workspace)
-
-        try:
-            await anyio.sleep_forever()
-        finally:
-            i3_conn.off(_callback_window)
-            i3_conn.off(_callback_workspace)

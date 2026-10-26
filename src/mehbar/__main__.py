@@ -30,8 +30,8 @@ def main() -> int:
         "--config-dir",
         dest="cfg_dir",
         type=Path,
-        default=get_config_home(),
-        help="configuration directory path",
+        default=None,
+        help=f"configuration directory path (default: {get_config_home()})",
     )
 
     parser.add_argument(
@@ -71,7 +71,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not args.cfg_dir.is_dir():
+    if args.cfg_dir is None:
+        # the built-in configuration is used if there is no user configuration
+        args.cfg_dir = get_config_home()
+    elif not args.cfg_dir.is_dir():
         parser.error(f"'{args.cfg_dir}' is not an existing directory")
 
     logging.basicConfig(level=log_level_mapping[args.log_level.upper()])

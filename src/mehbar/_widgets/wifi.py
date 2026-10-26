@@ -6,11 +6,13 @@ from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
+from ._dbus_facade import DBusUnavailable
 from ._wifi import (
     ConnManBackend,
     IWDBackend,
     NetworkManagerBackend,
     UnmanagedBackend,
+    WifiInfo,
     WifiOptions,
     WPASupplicantBackend,
 )
@@ -86,9 +88,13 @@ class WidgetWifi(WidgetBase):
         last_info = None
 
         while await self.sleep_interval():
-            info = await anyio.to_thread.run_sync(
-                self.backend.get_info, self.iface, self.qry_options
-            )
+            try:
+                info = await anyio.to_thread.run_sync(
+                    self.backend.get_info, self.iface, self.qry_options
+                )
+            except DBusUnavailable:
+                # e.g. the interface is removed, or the service is restarting
+                info = WifiInfo(self.iface, None, None, None)
 
             if info != last_info:
                 last_info = info

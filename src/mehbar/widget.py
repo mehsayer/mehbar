@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 
 import anyio
@@ -17,7 +17,7 @@ from gi.repository import GLib, Gtk, Pango  # type: ignore
 from .actions import ActionInterface, CallableAction, ExecAction
 from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
-from .tools import OptionalFormatter, next_prime, split_format
+from .tools import OptionalFormatter, describe_exception, next_prime, split_format
 
 
 class IconPosition(Enum):
@@ -287,8 +287,7 @@ class BarWidget(Gtk.Box):
     TYPE: str
     UNIQUE = True
     STATIC = False
-    # make the interval at least `ResourceManager.INTERVAL_OFFSET` apart from
-    # other widget intervals
+    # spread wake-ups of widgets over time, see `ResourceManager.relax_interval()`
     RELAX_INTERVAL = True
     # wake up at wall clock multiples of the interval
     ALIGN_INTERVAL = False
@@ -315,9 +314,11 @@ class BarWidget(Gtk.Box):
         if not isinstance(interval, (int, float)) or interval < 0:
             raise BarConfigError("'interval' must be a non-negative number")
 
+        phase = 0.0
+
         if interval > 0:
             if self.RELAX_INTERVAL and self.cfg.get("relax_interval", True):
-                interval = res_mgr.relax_interval(interval)
+                interval, phase = res_mgr.relax_interval(interval)
 
             if self.ALIGN_INTERVAL:
                 self._period = float(interval)
@@ -327,8 +328,16 @@ class BarWidget(Gtk.Box):
             self._period = 0.0
 
         self.interval = interval
-        self._stopped = False
+        # delay of wake-ups after the first one, a fraction of the period
+        self._phase = phase * self._period
         self._deadline: float | None = None
+
+        # set by the bar while `run()` is running
+        self.cancel_scope: anyio.CancelScope | None = None
+        # event loop thread only
+        self._available = True
+        # GTK main thread only
+        self._failed = False
 
         if (onclick := self.cfg.get("onclick")) is not None:
             if not isinstance(onclick, list):
@@ -337,7 +346,7 @@ class BarWidget(Gtk.Box):
             # the first command is for the primary (left) button
             for button, cmdline in enumerate(onclick, start=1):
                 if cmdline:
-                    self.onclick_exec(button, cmdline)
+                    self.onclick_exec(button, cmdline, f"'onclick' {button}")
 
         if (onscroll := self.cfg.get("onscroll")) is not None:
             if not isinstance(onscroll, list) or len(onscroll) != 2:
@@ -350,11 +359,8 @@ class BarWidget(Gtk.Box):
         """Returns immediately when called for the first time, then sleeps for
         the configured interval. Returns `False` if the widget should stop."""
 
-        if self._stopped:
-            return False
-
         if self._deadline is None:
-            self._deadline = anyio.current_time()
+            self._deadline = anyio.current_time() + self._phase
             return True
 
         if self._period <= 0:
@@ -369,10 +375,7 @@ class BarWidget(Gtk.Box):
             self._deadline = max(self._deadline + self._period, now)
             await anyio.sleep_until(self._deadline)
 
-        return not self._stopped
-
-    def shutdown(self):
-        self._stopped = True
+        return True
 
     async def run_wrapper(self):
         if not self.STATIC:
@@ -381,13 +384,60 @@ class BarWidget(Gtk.Box):
     async def run(self):
         raise NotImplementedError()
 
+    # Failures, GTK main thread
+
+    def fail(self, ex: BaseException):
+        """Disables the widget because of `ex`: removes it from the bar and
+        stops `run()`."""
+        if self._failed:
+            return
+
+        self._failed = True
+
+        logging.error(
+            "disabling widget '%s': %s",
+            self.widget_name,
+            describe_exception(ex),
+            extra={"exception": ex},
+        )
+
+        self.teardown()
+
+        if (parent := self.get_parent()) is not None:
+            parent.remove(self)
+
+        if (scope := self.cancel_scope) is not None:
+            self.call_soon(scope.cancel)
+
+    def teardown(self):
+        """Called when the widget is disabled, e.g. to remove GLib sources."""
+
+    def guard(self, func: Callable) -> Callable:
+        """Wraps a GTK main thread callback, e.g. a signal handler: if it
+        raises, the widget is disabled. Once the widget is disabled, the
+        callback is not called and returns `None`, which also removes GLib
+        timeout and idle sources."""
+
+        @wraps(func)
+        def _guarded(*args, **kwargs):
+            if self._failed:
+                return None
+            try:
+                return func(*args, **kwargs)
+            except Exception as ex:
+                self.fail(ex)
+                return None
+
+        return _guarded
+
     # Thread helpers
 
     def idle_add(self, func: Callable, *args: Any):
         """Calls `func` on GTK main thread."""
+        guarded = self.guard(func)
 
         def _run():
-            func(*args)
+            guarded(*args)
             return GLib.SOURCE_REMOVE
 
         GLib.idle_add(_run)
@@ -403,44 +453,60 @@ class BarWidget(Gtk.Box):
     def set_visible_i(self, state: bool):
         self.idle_add(self.set_visible, state)
 
+    def set_available_i(self, state: bool):
+        """Hides the widget while its source is temporarily unavailable, e.g.
+        a device is unplugged or a service is restarting. Event loop thread
+        only."""
+        if state != self._available:
+            self._available = state
+            self.set_visible_i(state)
+
     # Input
 
     def _onclick(self, button: int, action: ActionInterface):
         if button >= 0 and action is not None:
             controller = Gtk.GestureClick.new()
             controller.set_button(button)
-            controller.connect("pressed", lambda *_: action.run())
+            controller.connect("pressed", self.guard(lambda *_: action.run()))
             self.add_controller(controller)
 
-    def _onscroll(self, action_up: ActionInterface, action_down: ActionInterface):
+    def _onscroll(
+        self, action_up: ActionInterface | None, action_down: ActionInterface | None
+    ):
         def _scroll(_ctrl, _dx: float, dy: float) -> bool:
-            if dy < 0:
+            if dy < 0 and action_up is not None:
                 action_up.run()
-            elif dy > 0:
+            elif dy > 0 and action_down is not None:
                 action_down.run()
             return True
 
-        if action_up is not None and action_down is not None:
+        if action_up is not None or action_down is not None:
             controller = Gtk.EventControllerScroll.new(
                 Gtk.EventControllerScrollFlags.VERTICAL
                 | Gtk.EventControllerScrollFlags.DISCRETE
             )
-            controller.connect("scroll", _scroll)
+            controller.connect("scroll", self.guard(_scroll))
             self.add_controller(controller)
 
     def onclick_call(self, button: int, func: Callable, *args, **kwargs):
         """`func` is called on GTK main thread."""
         self._onclick(button, CallableAction(func, *args, **kwargs))
 
-    def onclick_exec(self, button: int, cmdline: str | list[str]):
-        self._onclick(button, ExecAction(cmdline))
+    def onclick_exec(
+        self, button: int, cmdline: str | list[str], option: str = "command"
+    ):
+        self._onclick(button, ExecAction(cmdline, option))
 
     def onscroll_call(self, func_up: Callable, func_down: Callable):
         """Functions are called on GTK main thread."""
         self._onscroll(CallableAction(func_up), CallableAction(func_down))
 
     def onscroll_exec(self, cmdline_up: str | list[str], cmdline_down: str | list[str]):
-        self._onscroll(ExecAction(cmdline_up), ExecAction(cmdline_down))
+        """An empty command does nothing."""
+        self._onscroll(
+            ExecAction(cmdline_up, "'onscroll' up") if cmdline_up else None,
+            ExecAction(cmdline_down, "'onscroll' down") if cmdline_down else None,
+        )
 
 
 class WidgetBase(BarWidget):
@@ -537,7 +603,7 @@ class WidgetBase(BarWidget):
                 label_.set_max_width_chars(max_width_chars)
                 label_.set_ellipsize(Pango.EllipsizeMode.END)
 
-        self._updater = IdleUpdater(self.apply_content)
+        self._updater = IdleUpdater(self.guard(self.apply_content))
 
         # State of GTK widgets, GTK main thread only
         self._shown_icon: str | None = None

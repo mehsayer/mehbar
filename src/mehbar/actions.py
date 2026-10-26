@@ -4,6 +4,8 @@ import subprocess
 import threading
 from collections.abc import Callable
 
+from .exceptions import BarConfigError
+
 
 class ActionInterface:
     def run(self):
@@ -21,11 +23,22 @@ class CallableAction(ActionInterface):
 
 
 class ExecAction(ActionInterface):
-    def __init__(self, args: str | list[str]):
+    """Runs a command, either a string split like a shell does or a list of
+    arguments. `option` names the command in configuration errors."""
+
+    def __init__(self, args: str | list[str], option: str = "command"):
         if isinstance(args, str):
-            self.args = shlex.split(args)
-        else:
+            try:
+                self.args = shlex.split(args)
+            except ValueError as ex:
+                raise BarConfigError(f"{option}: {ex}") from ex
+        elif isinstance(args, list) and all(isinstance(arg, str) for arg in args):
             self.args = list(args)
+        else:
+            raise BarConfigError(f"{option} must be a string or a list of strings")
+
+        if not self.args:
+            raise BarConfigError(f"{option} is empty")
 
     def run(self):
         try:
@@ -36,7 +49,7 @@ class ExecAction(ActionInterface):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except OSError as ex:
+        except (OSError, ValueError) as ex:  # ValueError, e.g. for a null byte
             logging.error("cannot execute %s: %s", self.args, ex)
         else:
             # reap the child once it exits so that it does not linger as a zombie

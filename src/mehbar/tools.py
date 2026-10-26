@@ -8,6 +8,34 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .exceptions import BarConfigError
+
+# environment variables the bar sets for itself only, see `child_environ()`
+OWN_ENVIRON: set[str] = set()
+
+
+def child_environ() -> dict[str, str] | None:
+    """Environment of programs started by the bar, `None` to inherit it."""
+    if not OWN_ENVIRON:
+        return None
+    return {
+        name: value for name, value in os.environ.items() if name not in OWN_ENVIRON
+    }
+
+
+def describe_exception(ex: BaseException) -> str:
+    # report the first actual error, not the group wrapping it
+    while isinstance(ex, BaseExceptionGroup) and ex.exceptions:
+        ex = ex.exceptions[0]
+
+    if isinstance(ex, BarConfigError):
+        return str(ex)
+
+    if msg := str(ex):
+        return f"{type(ex).__name__}: {msg}"
+
+    return type(ex).__name__
+
 
 def next_prime(num: int, offset: int = 0) -> int:
     num += offset
@@ -279,9 +307,13 @@ class LevelAwareLoggingFormatter(logging.Formatter):
 
 class ExceptionInfoFilter(logging.Filter):
     """Attaches the exception currently being handled, if any, to every
-    record that does not carry exception information already."""
+    record that does not carry exception information already. Exceptions
+    reported outside of `except` blocks can be passed in the `exception`
+    record attribute, e.g. `logging.error(..., extra={"exception": ex})`."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not record.exc_info and (exc := sys.exception()) is not None:
-            record.exc_info = (type(exc), exc, exc.__traceback__)
+        if not record.exc_info:
+            exc = getattr(record, "exception", None) or sys.exception()
+            if exc is not None:
+                record.exc_info = (type(exc), exc, exc.__traceback__)
         return True

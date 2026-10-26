@@ -1,3 +1,5 @@
+import anyio
+
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
@@ -51,6 +53,20 @@ class WidgetTemperature(WidgetBase):
         return max((shown or temps).values(), default=0), shown
 
     async def run(self):
+        seen = False
+
         while await self.sleep_interval():
-            hottest, values = self._read()
+            try:
+                # reading all sensors takes a while
+                hottest, values = await anyio.to_thread.run_sync(self._read)
+            except (OSError, ValueError):
+                # a wrong path disables the widget
+                if not seen:
+                    raise
+                # e.g. the sensor driver is reloaded
+                self.set_available_i(False)
+                continue
+
+            seen = True
+            self.set_available_i(True)
             self.set_new_content_i(min(max(hottest, 0), self.max_temp), **values)

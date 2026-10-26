@@ -7,7 +7,7 @@ from gi.repository import GLib  # type: ignore
 
 from mehbar.exceptions import CapabilityError
 
-from ._dbus_facade import DBusFacade, is_null_path
+from ._dbus_facade import DBusFacade, DBusUnavailable, is_null_path
 
 MIN_RSSI = -100
 MAX_RSSI = -30
@@ -105,6 +105,10 @@ class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
     DEV_IFACE = "org.freedesktop.NetworkManager.Device"
     DEV_WL_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
 
+    UNAVAILABLE_ERROR_NAMES = frozenset(
+        {"org.freedesktop.NetworkManager.UnknownDevice"}
+    )
+
     def get_ipaddr(self, cfg_obj: str | None, ip_ver: int) -> str | None:
         if is_null_path(cfg_obj):
             return None
@@ -170,6 +174,8 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
     IFACE_IFACE = "fi.w1.wpa_supplicant1.Interface"
     IFACE_NETWORK = "fi.w1.wpa_supplicant1.Network"
     IFACE_BSS = "fi.w1.wpa_supplicant1.BSS"
+
+    UNAVAILABLE_ERROR_NAMES = frozenset({"fi.w1.wpa_supplicant1.InterfaceUnknown"})
 
     def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
         info = WifiInfo(iface, None, None, None)
@@ -254,7 +260,10 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
                 )
                 if (rssi := diag.get("RSSI")) is not None:
                     return rssi
+            except DBusUnavailable:
+                raise
             except GLib.Error:
+                # e.g. iwd is built without the diagnostics interface
                 self._has_diagnostics = False
 
         (networks,) = self.call(

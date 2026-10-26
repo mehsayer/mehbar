@@ -58,6 +58,7 @@ class EventLoopBridge:
 
     def __init__(self):
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._tasks: set[asyncio.Task] = set()
 
     def attach(self):
         """Must be called from the event loop thread."""
@@ -79,11 +80,21 @@ class EventLoopBridge:
         """Starts a fire-and-forget task, exceptions are logged."""
 
         def _done(task: asyncio.Task):
+            self._tasks.discard(task)
+
             if not task.cancelled() and (ex := task.exception()) is not None:
-                logging.error("%s failed: %s", getattr(coro_func, "__name__", ""), ex)
+                logging.error(
+                    "%s failed: %s",
+                    getattr(coro_func, "__name__", ""),
+                    tools.describe_exception(ex),
+                    extra={"exception": ex},
+                )
 
         def _start():
-            asyncio.ensure_future(coro_func(*args)).add_done_callback(_done)
+            # the loop keeps only weak references to tasks
+            task = asyncio.ensure_future(coro_func(*args))
+            self._tasks.add(task)
+            task.add_done_callback(_done)
 
         return self.call_soon(_start)
 
@@ -161,7 +172,11 @@ class ResourceManager:
     COLOR_SCHEMES = ("light", "dark")
     DEFAULT_COLOR_SCHEME = "light"
 
+    # wake-ups of widgets are spread over time, see `relax_interval()`
     INTERVAL_OFFSET = 0.5
+    INTERVAL_MAX_DEVIATION = 2.5
+    # spreads phases of widgets sharing an interval evenly, whatever their number
+    PHASE_STEP = (5**0.5 - 1) / 2
 
     # configuration file extensions and modules to parse them, in order of preference
     CONFIG_PARSERS = (
@@ -182,7 +197,8 @@ class ResourceManager:
         self.loop = EventLoopBridge()
 
         self._icons: dict[str, Gdk.Paintable | None] = {}
-        self._intervals: set[float] = {0}
+        # relaxed interval -> number of widgets using it
+        self._intervals: dict[float, int] = {}
         self._i3_connection = None
         self._i3_lock: anyio.Lock | None = None
 
@@ -420,31 +436,83 @@ class ResourceManager:
                     css.append((f"{src}/{name}", data))
         return css
 
-    def relax_interval(self, interval: float) -> float:
-        """Nudges the interval up, so that it is at least `INTERVAL_OFFSET`
-        seconds apart from all intervals handed out before."""
+    def relax_interval(self, interval: float) -> tuple[float, float]:
+        """Spreads widget wake-ups over time, so that widgets polling at the
+        same interval neither cause periodic CPU and I/O spikes nor wait on
+        each other.
 
-        while True:
-            close = [i for i in self._intervals if abs(interval - i) < self.INTERVAL_OFFSET]
-            if not close:
+        The interval is nudged up to be at least `INTERVAL_OFFSET` seconds
+        apart from intervals handed out before, by no more than the interval
+        itself and `INTERVAL_MAX_DEVIATION`, e.g. 3 s may become up to 5.5 s,
+        5 s up to 7.5 s. If there is no such interval, the least shared one
+        within that range is reused. Returns the interval and the phase of
+        wake-ups, as a fraction of the interval, which keeps widgets sharing
+        an interval from waking up together."""
+
+        limit = interval + min(interval, self.INTERVAL_MAX_DEVIATION)
+        relaxed = interval
+
+        while close := [
+            i for i in self._intervals if abs(relaxed - i) < self.INTERVAL_OFFSET
+        ]:
+            relaxed = max(close) + self.INTERVAL_OFFSET
+
+            if relaxed > limit:
+                in_range = [i for i in self._intervals if interval <= i <= limit]
+                relaxed = min(
+                    in_range, key=lambda i: (self._intervals[i], i), default=interval
+                )
                 break
-            interval = max(close) + self.INTERVAL_OFFSET
 
-        self._intervals.add(interval)
-        return interval
+        shared = self._intervals.get(relaxed, 0)
+        self._intervals[relaxed] = shared + 1
+
+        return relaxed, shared * self.PHASE_STEP % 1.0
 
     # i3 / sway IPC
 
     async def get_i3_connection_async(self):
+        """Returns the shared i3/sway IPC connection, connecting if there is
+        none, and an event that is set once the connection is lost."""
         if self._i3_lock is None:
             self._i3_lock = anyio.Lock()
 
         async with self._i3_lock:
             if self._i3_connection is None:
-                from i3ipc.aio import Connection
+                from ._widgets._i3 import I3Connection
 
-                self._i3_connection = await Connection().connect()
+                conn = await I3Connection().connect()
+                self._i3_connection = (conn, anyio.Event())
+                self.loop.run_soon(self._watch_i3_connection, conn)
+
         return self._i3_connection
+
+    async def _watch_i3_connection(self, conn):
+        try:
+            # returns or raises once the connection is lost
+            await conn.main()
+            self.drop_i3_connection(conn)
+        except Exception as ex:
+            self.drop_i3_connection(conn, ex)
+        finally:  # e.g. cancelled on exit
+            self.drop_i3_connection(conn)
+
+    def drop_i3_connection(self, conn, reason: BaseException | None = None):
+        """Closes `conn`, if it is still the shared connection, and lets
+        widgets using it know. Must be called from the event loop thread."""
+        if self._i3_connection is None or self._i3_connection[0] is not conn:
+            return
+
+        _, lost = self._i3_connection
+        self._i3_connection = None
+
+        if reason is not None:
+            logging.warning(
+                "i3/sway IPC connection lost: %s", tools.describe_exception(reason)
+            )
+
+        conn.close()
+        lost.set()
 
     # Icons
 

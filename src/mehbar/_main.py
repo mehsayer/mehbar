@@ -56,21 +56,8 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 from . import _widgets
 from .exceptions import BarConfigError
 from .resource_manager import ResourceManager
+from .tools import describe_exception
 from .widget import BarWidget
-
-
-def describe_exception(ex: BaseException) -> str:
-    # report the first actual error, not the group wrapping it
-    while isinstance(ex, BaseExceptionGroup) and ex.exceptions:
-        ex = ex.exceptions[0]
-
-    if isinstance(ex, BarConfigError):
-        return str(ex)
-
-    if msg := str(ex):
-        return f"{type(ex).__name__}: {msg}"
-
-    return type(ex).__name__
 
 
 class MehBarGUI(Gtk.ApplicationWindow):
@@ -290,25 +277,20 @@ class MehBarGUI(Gtk.ApplicationWindow):
                 self._cancel_scope = grp.cancel_scope
 
                 for name, widget in self.widgets:
-                    grp.start_soon(self._run_widget, widget, name, name=name)
+                    grp.start_soon(self._run_widget, widget, name=name)
 
                 # keep event driven widgets alive
                 await anyio.sleep_forever()
         finally:
             self.res_mgr.loop.detach()
 
-    def _remove_widget(self, widget: BarWidget) -> bool:
-        if (parent := widget.get_parent()) is not None:
-            parent.remove(widget)
-        return GLib.SOURCE_REMOVE
-
-    async def _run_widget(self, widget: BarWidget, name: str):
-        try:
-            await widget.run_wrapper()
-        except Exception as ex:
-            widget.shutdown()
-            GLib.idle_add(self._remove_widget, widget)
-            logging.error("disabling widget '%s': %s", name, describe_exception(ex))
+    async def _run_widget(self, widget: BarWidget):
+        # lets the widget stop itself on errors in GTK main thread callbacks
+        with anyio.CancelScope() as widget.cancel_scope:
+            try:
+                await widget.run_wrapper()
+            except Exception as ex:
+                GLib.idle_add(widget.fail, ex)
 
 
 class MehBar(Gtk.Application):

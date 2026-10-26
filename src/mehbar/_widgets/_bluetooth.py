@@ -2,7 +2,7 @@ import enum
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ._dbus_facade import DBusFacade
+from ._dbus_facade import DBusFacade, DBusUnavailable
 
 
 class BluetoothStatus(enum.IntEnum):
@@ -36,7 +36,11 @@ class BluezBackend(DBusFacade):
     def get_info(self) -> BluetoothInfo:
         """Blocks, call it in a worker thread."""
 
-        objects = self.get_managed_objects()
+        try:
+            objects = self.get_managed_objects()
+        except DBusUnavailable:
+            # e.g. bluetoothd is restarting, or not started yet
+            return BluetoothInfo(BluetoothStatus.OFF)
 
         is_powered = any(
             ifaces[self.ADAPTER_IFACE].get("Powered", False)
@@ -76,7 +80,7 @@ class BluezBackend(DBusFacade):
 
     def subscribe(self, callback: Callable[[], None]) -> list[int]:
         """Calls `callback` on GTK main thread whenever adapters or devices
-        change. Returns subscription IDs."""
+        change, or BlueZ starts or stops. Returns subscription IDs."""
 
         def _on_props_changed(_path, _iface, _member, args):
             iface, changed, invalidated = args
@@ -92,6 +96,9 @@ class BluezBackend(DBusFacade):
             self.signal_subscribe(_on_ifaces_changed, self.OBJ_MANAGER_IFACE, member)
             for member in ("InterfacesAdded", "InterfacesRemoved")
         ]
+
+        # BlueZ does not signal its devices disconnecting when it stops
+        sub_ids.append(self.owner_subscribe(callback))
 
         for iface in (
             self.ADAPTER_IFACE,

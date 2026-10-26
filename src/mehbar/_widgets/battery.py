@@ -82,7 +82,8 @@ def read_batteries(root: Path = POWER_SUPPLY_PATH) -> BatteryInfo | None:
                     continue
                 batteries.append(_Battery.read(path))
             case "Mains" | "USB":
-                adapters_online.append(_read(path, "online") == "1")
+                # 1 is online, 2 is online programmable, e.g. USB PD
+                adapters_online.append((_read_int(path, "online") or 0) > 0)
 
     if not batteries:
         return None
@@ -147,7 +148,8 @@ def read_batteries(root: Path = POWER_SUPPLY_PATH) -> BatteryInfo | None:
 class WidgetBattery(WidgetBase):
     """Shows the combined charge of all system batteries. Label fields:
     `percent`, `timeleft`, `status`, `plugged`. Ramp entries come in pairs:
-    on battery, plugged in."""
+    on battery, plugged in. The widget is hidden while batteries that were
+    present are removed."""
 
     MAX_CHARGE = 100
     TYPE = "battery"
@@ -165,9 +167,21 @@ class WidgetBattery(WidgetBase):
         return min(idx, len(self.ramp) - 1)
 
     async def run(self):
+        seen = False
+
         while await self.sleep_interval():
-            if (info := read_batteries()) is None:
-                raise OSError(errno.ENODEV, "no battery detected")
+            info = read_batteries()
+
+            if not seen:
+                if info is None:
+                    raise OSError(errno.ENODEV, "no battery detected")
+                seen = True
+
+            self.set_available_i(info is not None)
+
+            if info is None:
+                # e.g. swapped, or the driver is reloaded
+                continue
 
             timeleft = None
 

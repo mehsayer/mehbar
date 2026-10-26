@@ -389,16 +389,49 @@ class BacklightDDCCI(BacklightInterface):
     I2C_PRE_VALUE = 0x02  # following value marker
     I2C_READ = 0x01  # read a value command
     I2C_SLAVE = 0x0703  # use slave address
-    I2C_SLAVE_FORCE = 0x0706  # use slave address, even if it is already in use
     I2C_SRC_ADDR = 0x6E  # ACK of the packet previously written
     I2C_WR_LEN = 0x80  # length mask
     I2C_WR_SUB = 0x51  # sub-address
+
+    PATH_I2C_ADAPTERS = "/sys/bus/i2c/devices"
+    # adapters of memory modules, sensors, touchpads, never of displays
+    NON_DISPLAY_ADAPTERS = ("smbus", "designware", "smu", "soc:i2cdsi")
 
     def __init__(self, disp: int | str | None = None):
         super().__init__(disp)
 
         self.device = None
         self.fd = -1
+
+    @classmethod
+    def _candidate_buses(cls, drm_cards: list[tuple[str, int, bool]]) -> list[Path]:
+        """I2C buses that may connect a display: DDC buses of DRM connectors
+        first, then other adapters, except known non-display ones. Probing
+        writes to the bus, which may confuse other devices on it, e.g. memory
+        module EEPROMs share the EDID address."""
+        buses = [
+            Path(cls.PATH_DEV) / f"i2c-{i2c_num}"
+            for i2c_num in sorted(
+                {i2c_num for _, i2c_num, _ in drm_cards if i2c_num >= 0}
+            )
+        ]
+
+        # e.g. the NVIDIA driver does not link DDC buses to DRM connectors
+        for i2c_dev in sorted(Path(cls.PATH_DEV).glob(cls.GLOB_I2C_DEV)):
+            if i2c_dev in buses:
+                continue
+
+            try:
+                adapter = (
+                    Path(cls.PATH_I2C_ADAPTERS) / i2c_dev.name / "name"
+                ).read_text()
+            except OSError:
+                continue
+
+            if not any(name in adapter.casefold() for name in cls.NON_DISPLAY_ADAPTERS):
+                buses.append(i2c_dev)
+
+        return buses
 
     async def _get_display(self) -> BacklightDevice | None:
         await self.close()
@@ -411,7 +444,7 @@ class BacklightDDCCI(BacklightInterface):
 
         i2c_re = re.compile(r"^i2c-(\d+)$")
 
-        for i2c_dev in Path(self.PATH_DEV).glob(self.GLOB_I2C_DEV):
+        for i2c_dev in self._candidate_buses(drm_cards):
             i2c_num = -1
 
             mul = 0.0
@@ -492,13 +525,13 @@ class BacklightDDCCI(BacklightInterface):
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
 
         try:
+            # EBUSY if a kernel driver owns the address, e.g. an EEPROM driver
+            # on a memory bus: never take it over
             fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
-        except OSError as ex:
-            if ex.errno == errno.EBUSY:
-                fcntl.ioctl(self.fd, self.I2C_SLAVE_FORCE, addr)
-                logging.warning("%s:0x%02x: device or address in use", str(path), addr)
-            else:
-                raise
+        except OSError:
+            os.close(self.fd)
+            self.fd = -1
+            raise
 
         return self.fd
 

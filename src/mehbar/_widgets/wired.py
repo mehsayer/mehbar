@@ -9,7 +9,7 @@ from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import WidgetBase
 
-from ._dbus_facade import DBusFacade, is_null_path
+from ._dbus_facade import DBusFacade, DBusUnavailable, is_null_path
 
 
 class WiredOptions(enum.Flag):
@@ -80,6 +80,10 @@ class NetworkManagerBackend(DBusFacade, WiredInfoQuery):
     STATE_DISCONNECTED = 30
     STATE_ACTIVATED = 100
 
+    UNAVAILABLE_ERROR_NAMES = frozenset(
+        {"org.freedesktop.NetworkManager.UnknownDevice"}
+    )
+
     def get_ipaddr(self, cfg_obj: str | None, ip_ver: int) -> str | None:
         if is_null_path(cfg_obj):
             return None
@@ -142,7 +146,8 @@ class UnmanagedBackend(WiredInfoQuery):
         base_path = self.PATH_NET / iface
 
         if not base_path.is_dir():
-            raise FileNotFoundError(f"no such network interface: {iface}")
+            # e.g. an USB adapter is unplugged
+            return WiredInfo(iface, None, False, False)
 
         pwrd = self._read(base_path / "operstate") == "up"
         connd = self._read(base_path / "carrier") == "1"
@@ -256,9 +261,13 @@ class WidgetWired(WidgetBase):
         last_info = None
 
         while await self.sleep_interval():
-            info = await anyio.to_thread.run_sync(
-                self.backend.get_info, self.iface, self.qry_options
-            )
+            try:
+                info = await anyio.to_thread.run_sync(
+                    self.backend.get_info, self.iface, self.qry_options
+                )
+            except DBusUnavailable:
+                # e.g. the interface is removed, or the service is restarting
+                info = WiredInfo(self.iface, None, False, False)
 
             if info != last_info:
                 last_info = info

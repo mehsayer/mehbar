@@ -2,12 +2,14 @@ import logging
 import re
 from dataclasses import dataclass
 
-import anyio
 from gi.repository import Gtk  # type: ignore
+from i3ipc import Event, WorkspaceEvent
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
 from mehbar.widget import BarWidget, IdleUpdater, RewriteMixin, WidgetBase
+
+from ._i3 import I3Connection, I3WidgetMixin
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,7 @@ class I3WorkspaceButton(WidgetBase):
                 self.remove_css_class(css_class)
 
 
-class WidgetI3Workspaces(RewriteMixin, BarWidget):
+class WidgetI3Workspaces(I3WidgetMixin, RewriteMixin, BarWidget):
     """Shows workspace buttons. Button labels are formatted using `label`
     with `name` (rewritten) and `num` fields, ramp entries are for workspace
     states: empty, normal, focused, urgent. Workspaces listed in
@@ -130,7 +132,7 @@ class WidgetI3Workspaces(RewriteMixin, BarWidget):
             scroll_ctrl = Gtk.EventControllerScroll.new(
                 Gtk.EventControllerScrollFlags.VERTICAL
             )
-            scroll_ctrl.connect("scroll", _scroll)
+            scroll_ctrl.connect("scroll", self.guard(_scroll))
             self.viewport.add_controller(scroll_ctrl)
             self.scroller.set_child(self.viewport)
         else:
@@ -142,7 +144,7 @@ class WidgetI3Workspaces(RewriteMixin, BarWidget):
 
         # GTK main thread only
         self._buttons: dict[str, I3WorkspaceButton] = {}
-        self._updater = IdleUpdater(self._apply_states)
+        self._updater = IdleUpdater(self.guard(self._apply_states))
 
         # event loop thread only
         self._i3_conn = None
@@ -157,7 +159,7 @@ class WidgetI3Workspaces(RewriteMixin, BarWidget):
     # Event loop thread
 
     async def switch_to(self, ws_name: str):
-        i3_conn = await self.res_mgr.get_i3_connection_async()
+        i3_conn, _ = await self.res_mgr.get_i3_connection_async()
         escaped = ws_name.replace("\\", "\\\\").replace('"', '\\"')
         await i3_conn.command(f'workspace "{escaped}"')
 
@@ -209,24 +211,17 @@ class WidgetI3Workspaces(RewriteMixin, BarWidget):
 
         self._updater.submit(tuple(ordered))
 
-    async def run(self):
-        from i3ipc import Event, WorkspaceEvent
+    async def i3_start(self, conn: I3Connection):
+        self._i3_conn = conn
 
-        self._i3_conn = await self.res_mgr.get_i3_connection_async()
-
-        async def _callback_workspace(_, event: WorkspaceEvent):
+        async def _callback_workspace(event: WorkspaceEvent):
             if event.change == "focus" and event.old is not None:
                 self._prev_focus = event.old.name
             await self._refresh()
 
+        self.i3_on(conn, Event.WORKSPACE, _callback_workspace)
+
         await self._refresh()
-
-        self._i3_conn.on(Event.WORKSPACE, _callback_workspace)
-
-        try:
-            await anyio.sleep_forever()
-        finally:
-            self._i3_conn.off(_callback_workspace)
 
     # GTK main thread
 
