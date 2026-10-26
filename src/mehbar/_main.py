@@ -47,15 +47,6 @@ except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
-# The Vulkan renderer gains nothing on a bar, and the NVIDIA driver reports
-# VK_SUBOPTIMAL_KHR for the first frames of every new surface, which GTK logs.
-# Programs started by the bar do not inherit it.
-from .tools import OWN_ENVIRON
-
-if "GSK_RENDERER" not in os.environ:
-    os.environ["GSK_RENDERER"] = "gl"
-    OWN_ENVIRON.add("GSK_RENDERER")
-
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
 from . import _widgets

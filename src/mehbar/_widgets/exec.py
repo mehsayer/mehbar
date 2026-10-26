@@ -9,7 +9,6 @@ from anyio.abc import ByteReceiveStream, Process
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.tools import child_environ
 from mehbar.widget import JSONInputMixin, WidgetBase
 
 
@@ -44,7 +43,6 @@ async def open_command(cmdline: str | list[str]) -> Process:
         cmdline,
         stdin=subprocess.DEVNULL,
         stderr=None,
-        env=child_environ(),
         start_new_session=True,
     )
 

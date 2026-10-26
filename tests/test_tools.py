@@ -2,7 +2,6 @@ import math
 
 import pytest
 
-from mehbar import tools
 from mehbar.exceptions import BarConfigError
 from mehbar.tools import (
     FormattableTimeDelta,
@@ -93,13 +92,3 @@ def test_describe_exception():
 
     group = ExceptionGroup("group", [KeyError("k"), ValueError("v")])
     assert describe_exception(group) == "KeyError: 'k'"
-
-
-def test_child_environ_drops_own_variables(monkeypatch):
-    monkeypatch.setattr(tools, "OWN_ENVIRON", set())
-    assert tools.child_environ() is None
-
-    monkeypatch.setenv("MEHBAR_TEST_VAR", "1")
-    monkeypatch.setattr(tools, "OWN_ENVIRON", {"MEHBAR_TEST_VAR"})
-    env = tools.child_environ()
-    assert env is not None and "MEHBAR_TEST_VAR" not in env and "PATH" in env

@@ -11,18 +11,6 @@ from typing import Any
 
 from .exceptions import BarConfigError
 
-# environment variables the bar sets for itself only, see `child_environ()`
-OWN_ENVIRON: set[str] = set()
-
-
-def child_environ() -> dict[str, str] | None:
-    """Environment of programs started by the bar, `None` to inherit it."""
-    if not OWN_ENVIRON:
-        return None
-    return {
-        name: value for name, value in os.environ.items() if name not in OWN_ENVIRON
-    }
-
 
 def describe_exception(ex: BaseException) -> str:
     # report the first actual error, not the group wrapping it

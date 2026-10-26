@@ -42,7 +42,10 @@ The `all` extra installs every optional Python dependency, see
 | `-L`, `--log-level` | `debug`, `info`, `warning`, `error` or `critical` |
 | `-E`, `--exception-info` | Log tracebacks of errors |
 
-Command line options override configuration files. Only one instance runs at a
+Command line options override configuration files. GTK picks the renderer,
+Vulkan, or GL if Vulkan is not available; `GSK_RENDERER` overrides it. With
+the NVIDIA driver, the GL renderer may leave stale pixels behind, e.g. of a
+previous window title, `GSK_DEBUG=full-redraw` avoids that. Only one instance runs at a
 time: starting another one logs a warning and exits, stop the running bar to
 apply new options. For sway, add to its configuration:
 

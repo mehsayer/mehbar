@@ -5,7 +5,6 @@ import threading
 from collections.abc import Callable
 
 from .exceptions import BarConfigError
-from .tools import child_environ
 
 
 class ActionInterface:
@@ -46,7 +45,6 @@ class ExecAction(ActionInterface):
             proc = subprocess.Popen(
                 self.args,
                 start_new_session=True,
-                env=child_environ(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
