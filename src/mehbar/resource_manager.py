@@ -533,6 +533,8 @@ class ResourceManager:
                 "i3/sway IPC connection lost: %s", tools.describe_exception(reason)
             )
 
+        # ends `_watch_i3_connection()`
+        conn.main_quit()
         conn.close()
         lost.set()
 

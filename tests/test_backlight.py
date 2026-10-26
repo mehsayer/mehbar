@@ -61,3 +61,20 @@ def test_without_write_access_logind_is_used(panel, monkeypatch):
 
     assert calls == [("panel0", 4)]
     assert _raw(panel) == 3
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write anyway")
+def test_failing_logind_keeps_the_level(panel, monkeypatch, caplog):
+    from mehbar._widgets._dbus_facade import DBusUnavailable
+
+    def _fail(self, device, level):
+        raise DBusUnavailable("org.freedesktop.login1: not running")
+
+    monkeypatch.setattr(_backlight.LogindSession, "set_brightness", _fail)
+    (panel / "brightness").chmod(0o444)
+
+    level = anyio.run(_change, 1)
+
+    # the level of the device, unchanged
+    assert level == pytest.approx(3 / 0.15)
+    assert "cannot set the brightness" in caplog.text

@@ -179,6 +179,11 @@ def test_weather_requests_are_cached(make_res_mgr, tmp_path, monkeypatch):
     anyio.run(widget._update)
     assert len(requests) == 2
 
+    # the clock was set back: the weather is stale
+    clock[0] -= 3600
+    anyio.run(widget._update)
+    assert len(requests) == 3
+
     # a restarted bar uses the cached weather
     restarted = _widget()
     cached = restarted.cache.load()

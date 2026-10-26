@@ -11,8 +11,8 @@ from i3ipc._private import MessageType
 from i3ipc.aio import Connection
 from i3ipc.aio.connection import _MAGIC, _pack, _struct_header_size, _unpack_header
 
-# raised when the connection to i3/sway is lost
-CONNECTION_ERRORS = (OSError, EOFError)
+# raised when the connection to i3/sway is lost, see `I3Connection._message()`
+CONNECTION_ERRORS = (ConnectionError, EOFError)
 
 
 def not_running(ex: Exception) -> bool:
@@ -98,7 +98,17 @@ class I3Connection(Connection):
 
                 if isinstance(ex, TimeoutError):
                     raise ConnectionError("i3/sway did not reply") from ex
+                # e.g. EBADF of a socket closed meanwhile
+                if isinstance(ex, OSError) and not isinstance(ex, ConnectionError):
+                    raise ConnectionError(f"i3/sway request failed: {ex}") from ex
                 raise
+
+    def main_quit(self, _error=None):
+        # e.g. `main()` was cancelled on exit
+        if self._main_future is not None and self._main_future.done():
+            self._main_future = None
+            return
+        super().main_quit(_error)
 
     def close(self):
         try:

@@ -384,8 +384,9 @@ class BarWidget(Gtk.Box):
     ALIGN_INTERVAL = False
     # updated only every interval, a warning is logged if it is not set
     POLLING = False
-    # longest sleep of aligned widgets, see `sleep_interval()`
-    MAX_ALIGNED_SLEEP = 1.0
+    # steps of sleeps of aligned widgets, see `sleep_interval()`
+    MIN_ALIGNED_STEP = 1.0
+    MAX_ALIGNED_STEP = 15.0
     TOOLTIP_TRIGGERS = ("hover", "click")
     # when the latest tooltip was hidden, of any widget
     tooltip_hidden_at = 0.0
@@ -476,9 +477,14 @@ class BarWidget(Gtk.Box):
             target = (time.time() // self._period + 1) * self._period + 0.005
 
             # the event loop clock stops while the system is suspended, the
-            # wall clock does not: sleep in steps to catch up soon after resume
+            # wall clock does not: sleep in steps of a quarter of the period,
+            # to catch up soon after resume without waking up too often
+            step = max(
+                self.MIN_ALIGNED_STEP, min(self._period / 4, self.MAX_ALIGNED_STEP)
+            )
+
             while (remaining := target - time.time()) > 0:
-                await anyio.sleep(min(remaining, self.MAX_ALIGNED_SLEEP))
+                await anyio.sleep(min(remaining, step))
         else:
             now = anyio.current_time()
             # do not try to catch up if the widget fell behind
@@ -821,7 +827,7 @@ class WidgetBase(BarWidget):
         """Tooltips are popovers of their widgets: GTK shows all tooltips in
         one window, which it resizes while the pointer moves from widget to
         widget, and which may then keep the size of the previous one."""
-        if self._popover is not None:
+        if self._popover is not None or not self._may_show_tooltip():
             return
 
         self._popover = Gtk.Popover()
@@ -845,6 +851,17 @@ class WidgetBase(BarWidget):
         motion.connect("enter", self.guard(self._on_enter))
         motion.connect("leave", self.guard(self._on_leave))
         self.add_controller(motion)
+
+    def _may_show_tooltip(self) -> bool:
+        """Whether there is a tooltip option or specification, or a widget
+        type specific tooltip, e.g. the calendar."""
+        if type(self).build_tooltip is not WidgetBase.build_tooltip:
+            return True
+
+        contents = (self.content, *self._ramp_contents)
+        return self.tooltip_content is not None or any(
+            content.tooltip_text for content in contents
+        )
 
     def _on_enter(self, *_):
         # moving on from a widget that showed its tooltip shows the next one

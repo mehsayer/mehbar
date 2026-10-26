@@ -18,14 +18,26 @@ class WidgetDiskUsage(WidgetBase):
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
         self.path = self.cfg.get("path", "/")
-        # a hung network file system keeps blocking a thread, keep it to one
-        self._limiter = anyio.CapacityLimiter(1)
+        # a read of a hung network file system blocks its thread until the
+        # file system responds, AnyIO only stops waiting for it
+        self._reading = False
+
+    def _read(self):
+        try:
+            return disk_usage(self.path)
+        finally:
+            self._reading = False
 
     async def _disk_usage(self):
-        with anyio.move_on_after(self.TIMEOUT):
-            return await anyio.to_thread.run_sync(
-                disk_usage, self.path, abandon_on_cancel=True, limiter=self._limiter
-            )
+        # no more threads while the previous read is stuck
+        if not self._reading:
+            self._reading = True
+
+            with anyio.move_on_after(self.TIMEOUT):
+                return await anyio.to_thread.run_sync(
+                    self._read, abandon_on_cancel=True
+                )
+
         raise TimeoutError(f"'{self.path}' does not respond")
 
     async def run(self):

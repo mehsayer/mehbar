@@ -161,7 +161,8 @@ class WidgetWeather(WidgetBase):
         """Requests the weather, unless the latest request is recent."""
         now = time.time()
 
-        if now - self._fetched_at < self.FETCH_INTERVAL:
+        # a negative age, e.g. after the clock was set back, is stale
+        if 0 <= now - self._fetched_at < self.FETCH_INTERVAL:
             return
 
         self._fetched_at = now

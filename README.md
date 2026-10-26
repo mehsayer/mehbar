@@ -253,6 +253,8 @@ Notes:
   `DEFAULT_MODULES` in `src/mehbar/_widgets/playerctl.py`. Without
   `player_names`, it follows the player that plays.
 - `pulse_volume`: scrolling changes the volume, a right click toggles mute.
+  Scrolling raises each channel up to `max_volume` percent, 100 by default,
+  and the widget shows at most that; a louder volume set elsewhere stays.
 - `idle_inhibitor` keeps the screen from blanking and locking while it is
   on, a click turns it on or off, `active = true` turns it on at start. It
   uses the Wayland idle inhibit protocol, which sway supports.

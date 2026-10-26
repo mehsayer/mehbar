@@ -4,7 +4,7 @@ from functools import partial
 
 import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
-from pulsectl import PulseDisconnected, PulseError, PulseIndexError
+from pulsectl import PulseDisconnected, PulseError, PulseIndexError, PulseVolumeInfo
 from pulsectl_asyncio import PulseAsync
 
 from mehbar.exceptions import BarConfigError
@@ -13,9 +13,17 @@ from mehbar.tools import describe_exception
 from mehbar.widget import RequestQueue, WidgetBase, spread_index
 
 
+def change_volumes(values: list[float], delta: float, limit: float) -> list[float]:
+    """Changes channel volumes by `delta`, raising them up to `limit` only:
+    channels may differ, and channels raised above it elsewhere stay."""
+    if delta > 0:
+        return [max(value, min(value + delta, limit)) for value in values]
+    return [max(0.0, value + delta) for value in values]
+
+
 class WidgetPulseVolume(WidgetBase):
-    """Shows the sink volume. Scroll changes the volume, right click toggles
-    mute. The first ramp entry is shown when muted, the rest is spread over
+    """Shows the sink volume, at most `max_volume` percent. Scroll changes
+    the volume up to `max_volume`, right click toggles mute. The first ramp entry is shown when muted, the rest is spread over
     0..`max_volume` percent. The widget is hidden while the sound server or
     the sink is not available."""
 
@@ -85,7 +93,8 @@ class WidgetPulseVolume(WidgetBase):
             # removed, a 'remove' event follows
             return
 
-        volume = round(sink.volume.value_flat * 100)
+        # e.g. raised above the limit elsewhere
+        volume = min(round(sink.volume.value_flat * 100), self.max_volume)
 
         if sink.mute:
             ramp_level = self.max_volume + 1
@@ -165,16 +174,11 @@ class WidgetPulseVolume(WidgetBase):
                 await self._op(pulse.mute, sink, not sink.mute)
                 continue
 
-            current = sink.volume.value_flat
+            values = sink.volume.values
+            targets = change_volumes(values, delta, self.max_volume / 100)
 
-            if delta > 0:
-                # do not lower a volume raised above the limit elsewhere
-                target = max(current, min(current + delta, self.max_volume / 100))
-            else:
-                target = max(0.0, current + delta)
-
-            if abs(target - current) >= 0.005:
-                await self._op(pulse.volume_change_all_chans, sink, target - current)
+            if any(abs(t - v) >= 0.005 for t, v in zip(targets, values, strict=True)):
+                await self._op(pulse.volume_set, sink, PulseVolumeInfo(targets))
 
     async def _session(self, rstream: ObjectReceiveStream[float | None]):
         """Shows the volume until disconnected from the sound server."""

@@ -53,15 +53,33 @@ class DBusFacade:
     def __init__(self, bus: Gio.DBusConnection | None = None, svc: str | None = None):
         self._bus = bus
         self.svc = svc or self.BASE_SVC
+        # subscription ID -> connection
+        self._subscriptions: dict[int, Gio.DBusConnection] = {}
 
     @property
     def bus(self) -> Gio.DBusConnection:
-        if self._bus is None:
-            self._bus = Gio.bus_get_sync(self.BUS_TYPE, None)
-            # the connection is shared, by default the process gets SIGTERM
-            # once it is closed, e.g. when the bus daemon restarts
-            self._bus.set_exit_on_close(False)
+        """The connection, reconnected if it was closed, e.g. when the bus
+        daemon restarted. Subscriptions are not renewed."""
+        if self._bus is None or self._bus.is_closed():
+            self._bus = self._connect()
         return self._bus
+
+    def _connect(self) -> Gio.DBusConnection:
+        bus = Gio.bus_get_sync(self.BUS_TYPE, None)
+
+        # GLib keeps handing out the shared connection once it is closed
+        if bus.is_closed():
+            bus = Gio.DBusConnection.new_for_address_sync(
+                Gio.dbus_address_get_for_bus_sync(self.BUS_TYPE, None),
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None,
+                None,
+            )
+
+        # by default, the process gets SIGTERM once the connection is closed
+        bus.set_exit_on_close(False)
+        return bus
 
     def is_unavailable(self, ex: GLib.Error) -> bool:
         if ex.domain == GLib.quark_to_string(Gio.DBusError.quark()):
@@ -134,15 +152,7 @@ class DBusFacade:
         def _on_signal(_conn, _sender, path, iface_, member_, params):
             callback(path, iface_, member_, params.unpack())
 
-        return self.bus.signal_subscribe(
-            self.svc,
-            iface,
-            member,
-            obj,
-            arg0,
-            Gio.DBusSignalFlags.NONE,
-            _on_signal,
-        )
+        return self._subscribe(self.svc, iface, member, obj, arg0, _on_signal)
 
     def owner_subscribe(self, callback: Callable[[], None]) -> int:
         """`callback()` is invoked on GTK main thread when the service
@@ -152,18 +162,27 @@ class DBusFacade:
             callback()
 
         # subclasses override BASE_SVC
-        return self.bus.signal_subscribe(
+        return self._subscribe(
             DBusFacade.BASE_SVC,
             "org.freedesktop.DBus",
             "NameOwnerChanged",
             "/org/freedesktop/DBus",
             self.svc,
-            Gio.DBusSignalFlags.NONE,
             _on_signal,
         )
 
+    def _subscribe(self, svc, iface, member, obj, arg0, callback) -> int:
+        bus = self.bus
+        sub_id = bus.signal_subscribe(
+            svc, iface, member, obj, arg0, Gio.DBusSignalFlags.NONE, callback
+        )
+        # a reconnect replaces the connection
+        self._subscriptions[sub_id] = bus
+        return sub_id
+
     def signal_unsubscribe(self, sub_id: int):
-        self.bus.signal_unsubscribe(sub_id)
+        if (bus := self._subscriptions.pop(sub_id, None)) is not None:
+            bus.signal_unsubscribe(sub_id)
 
 
 def is_null_path(path: str | None) -> bool:

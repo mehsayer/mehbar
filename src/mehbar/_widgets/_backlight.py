@@ -15,7 +15,7 @@ from pathlib import Path
 import anyio
 from gi.repository import GLib  # type: ignore
 
-from ._dbus_facade import DBusFacade
+from ._dbus_facade import DBusFacade, DBusUnavailable
 
 # References:
 # https://docs.kernel.org/admin-guide/abi-stable.html#
@@ -401,9 +401,18 @@ class BacklightACPI(BacklightInterface):
 
         if self.wr_fd >= 0:
             os.pwrite(self.wr_fd, str(raw).encode(), 0)
-        else:
+            return
+
+        try:
             await anyio.to_thread.run_sync(
                 LogindSession().set_brightness, self.device.path.name, raw
+            )
+        except (GLib.Error, DBusUnavailable) as ex:
+            # e.g. no logind, or an inactive session: the brightness stays
+            logging.warning(
+                "%s: cannot set the brightness, no write access and logind failed: %s",
+                self.device.path.name,
+                getattr(ex, "message", ex),
             )
 
     async def get_level(self) -> float:
@@ -430,7 +439,8 @@ class BacklightACPI(BacklightInterface):
         target = max(0, min(target, int(self.device.max_level)))
         await self._set_raw(target)
 
-        return target / self.device.mul
+        # what the device shows, the change may have failed
+        return self._get_raw() / self.device.mul
 
     async def close(self):
         if self.wr_fd is not None and self.wr_fd >= 0:
@@ -590,9 +600,16 @@ class BacklightDDCCI(BacklightInterface):
             # EBUSY if a kernel driver owns the address, e.g. an EEPROM driver
             # on a memory bus: never take it over
             fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
-        except OSError:
+        except OSError as ex:
             os.close(self.fd)
             self.fd = -1
+
+            if ex.errno == errno.EBUSY and addr == self.I2C_ADDR_TX:
+                logging.info(
+                    "%s: DDC/CI is used by a kernel driver, e.g. ddcci_backlight, "
+                    "use the 'acpi' driver for its backlight device",
+                    path,
+                )
             raise
 
         return self.fd

@@ -134,7 +134,11 @@ class WidgetExecTail(ExecWidgetBase):
                                 self._line_ready.set()
 
                     grp.cancel_scope.cancel()
+
+                # its output ended, e.g. it is cleaning up
+                await proc.wait()
             finally:
+                # stopping the widget stops the command
                 await stop_command(proc)
 
         if self._latest_line is not None:
