@@ -16,8 +16,13 @@ class WidgetSession(WidgetBase):
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
 
-        self.username = getpass.getuser()
         self.uid = os.getuid()
+
+        try:
+            self.username = getpass.getuser()
+        except OSError:  # no passwd entry, e.g. in a container
+            self.username = str(self.uid)
+
         self.hostname = socket.gethostname()
 
     async def run(self):

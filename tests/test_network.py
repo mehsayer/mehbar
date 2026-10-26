@@ -99,3 +99,32 @@ def test_other_errors_are_raised_as_is(system_bus):
 def test_bus_does_not_exit_on_close(system_bus):
     facade = DBusFacade()
     assert facade.bus.get_exit_on_close() is False
+
+
+@pytest.mark.parametrize(
+    ("flags", "carrier", "operstate", "powered", "connected"),
+    [
+        ("0x1003", "1", "up", True, True),
+        # no cable: the state is 'down', but the interface is up
+        ("0x1003", "0", "down", True, False),
+        ("0x1002", None, "down", False, False),
+        # drivers not reporting the state
+        ("0x1003", "1", "unknown", True, True),
+        # e.g. 802.1X authentication
+        ("0x1003", "1", "dormant", True, False),
+    ],
+)
+def test_unmanaged_wired_states(
+    tmp_path, monkeypatch, flags, carrier, operstate, powered, connected
+):
+    iface = tmp_path / "eth0"
+    iface.mkdir()
+    (iface / "flags").write_text(flags + "\n")
+    (iface / "operstate").write_text(operstate + "\n")
+    if carrier is not None:
+        (iface / "carrier").write_text(carrier + "\n")
+    monkeypatch.setattr(wired.UnmanagedBackend, "PATH_NET", tmp_path)
+
+    info = wired.UnmanagedBackend().get_info("eth0", WiredOptions.NONE)
+
+    assert (info.powered, info.connected) == (powered, connected)

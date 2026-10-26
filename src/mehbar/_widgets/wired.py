@@ -142,6 +142,8 @@ class UnmanagedBackend(WiredInfoQuery):
         except OSError:  # e.g. 'carrier' cannot be read while the link is down
             return None
 
+    IFF_UP = 0x1
+
     def get_info_(self, iface: str, options: WiredOptions) -> WiredInfo:
         base_path = self.PATH_NET / iface
 
@@ -149,10 +151,22 @@ class UnmanagedBackend(WiredInfoQuery):
             # e.g. an USB adapter is unplugged
             return WiredInfo(iface, None, False, False)
 
-        pwrd = self._read(base_path / "operstate") == "up"
-        connd = self._read(base_path / "carrier") == "1"
+        # the operational state is 'down' without a link, it does not tell
+        # whether the interface is up
+        try:
+            is_up = bool(int(self._read(base_path / "flags") or "0", 16) & self.IFF_UP)
+        except ValueError:
+            is_up = False
 
-        return WiredInfo(iface, None, pwrd, pwrd and connd)
+        # 'unknown' if the driver does not report the state, 'dormant' while
+        # authenticating, e.g. with 802.1X
+        connected = (
+            is_up
+            and self._read(base_path / "carrier") == "1"
+            and self._read(base_path / "operstate") in ("up", "unknown")
+        )
+
+        return WiredInfo(iface, None, is_up, connected)
 
 
 class ConnManBackend(DBusFacade, WiredInfoQuery):

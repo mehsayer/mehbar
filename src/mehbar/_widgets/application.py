@@ -53,6 +53,10 @@ class WidgetApplication(WidgetBase):
     @classmethod
     def _find_app(cls, app_id: str | None, app_name: str | None) -> Gio.AppInfo | None:
         if app_id is not None:
+            # e.g. 'firefox' for 'firefox.desktop'
+            if not app_id.endswith(".desktop"):
+                app_id += ".desktop"
+
             try:
                 if (app := Gio.DesktopAppInfo.new(app_id)) is not None:
                     return app

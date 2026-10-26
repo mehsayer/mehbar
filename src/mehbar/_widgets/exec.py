@@ -96,6 +96,9 @@ class ExecWidgetBase(JSONInputMixin, WidgetBase):
         )
 
         max_lps = self.cfg.get("max_lps", self.MAX_LPS)
+
+        if not isinstance(max_lps, (int, float)):
+            raise BarConfigError("'max_lps' must be a number")
         self.max_lps = max(min(max_lps, self.MAX_LPS), 1)
 
 

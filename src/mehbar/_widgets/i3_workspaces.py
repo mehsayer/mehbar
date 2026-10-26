@@ -197,7 +197,10 @@ class WidgetI3Workspaces(I3WidgetMixin, RewriteMixin, BarWidget):
                 )
 
         # numbered workspaces first, like i3 does
-        ordered = sorted(states.values(), key=lambda s: (s.num < 0, s.num, s.name))
+        def _order(state: WorkspaceState):
+            return (state.num < 0, state.num, state.name)
+
+        ordered = sorted(states.values(), key=_order)
 
         if len(ordered) > self.max_workspaces:
             if not self._too_many_logged:
@@ -207,7 +210,12 @@ class WidgetI3Workspaces(I3WidgetMixin, RewriteMixin, BarWidget):
                     self.widget_name,
                     self.max_workspaces,
                 )
-            ordered = ordered[: self.max_workspaces]
+            # the focused and urgent workspaces are always shown
+            shown = [s for s in ordered if s.focused or s.urgent]
+            shown += [s for s in ordered if s not in shown][
+                : max(self.max_workspaces - len(shown), 0)
+            ]
+            ordered = sorted(shown, key=_order)
 
         self._updater.submit(tuple(ordered))
 
