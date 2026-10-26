@@ -10,7 +10,7 @@ from pulsectl_asyncio import PulseAsync
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
 from mehbar.tools import describe_exception
-from mehbar.widget import WidgetBase
+from mehbar.widget import RequestQueue, WidgetBase, spread_index
 
 
 class WidgetPulseVolume(WidgetBase):
@@ -24,7 +24,6 @@ class WidgetPulseVolume(WidgetBase):
     MAX_VOLUME = 200
     MIN_VOLUME = 20
     DEFAULT_DELTA = 10
-    QUEUE_SIZE = 8
     # shorter than the time the bar waits for widgets to stop
     CONNECT_TIMEOUT = 2
     RECONNECT_DELAY = 2
@@ -49,12 +48,13 @@ class WidgetPulseVolume(WidgetBase):
         self.max_volume = max(min(max_volume_, self.MAX_VOLUME), self.MIN_VOLUME)
         self.vol_delta = vol_delta / 100
 
-        self._sstream: ObjectSendStream[float | None] | None = None
+        # volume changes by a delta, None toggles mute
+        self.requests = RequestQueue(res_mgr.loop)
 
-        self.onclick_call(3, self.call_soon, self._request, None)
+        self.onclick_call(3, self.requests.put, None)
         self.onscroll_call(
-            partial(self.call_soon, self._request, self.vol_delta),
-            partial(self.call_soon, self._request, -self.vol_delta),
+            partial(self.requests.put, self.vol_delta),
+            partial(self.requests.put, -self.vol_delta),
         )
 
     def ramp_index(self, ramp_level: int) -> int | None:
@@ -64,16 +64,7 @@ class WidgetPulseVolume(WidgetBase):
         if ramp_level > self.max_volume or len(self.ramp) == 1:
             return 0
 
-        level = min(ramp_level, self.max_volume - 1)
-        return int(level / (self.max_volume / (len(self.ramp) - 1))) + 1
-
-    def _request(self, delta: float | None):
-        """Requests a volume change by `delta`, `None` toggles mute."""
-        if self._sstream is not None:
-            try:
-                self._sstream.send_nowait(delta)
-            except (anyio.WouldBlock, anyio.ClosedResourceError):
-                pass
+        return 1 + spread_index(ramp_level, self.max_volume, len(self.ramp) - 1)
 
     @staticmethod
     async def _op(coro_func, *args):
@@ -221,12 +212,9 @@ class WidgetPulseVolume(WidgetBase):
             wake_recv.close()
 
     async def run(self):
-        self._sstream, rstream = anyio.create_memory_object_stream[float | None](
-            self.QUEUE_SIZE
-        )
         self._outage_logged = False
 
-        try:
+        with self.requests.receive() as rstream:
             # the sound server may start after the bar, or restart
             while True:
                 try:
@@ -242,7 +230,3 @@ class WidgetPulseVolume(WidgetBase):
 
                 self.set_available_i(False)
                 await anyio.sleep(self.RECONNECT_DELAY)
-        finally:
-            self._sstream.close()
-            self._sstream = None
-            rstream.close()

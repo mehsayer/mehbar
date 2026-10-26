@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 import socket
 from collections.abc import Callable
 from typing import Any
@@ -12,6 +13,14 @@ from i3ipc.aio.connection import _MAGIC, _pack, _struct_header_size, _unpack_hea
 
 # raised when the connection to i3/sway is lost
 CONNECTION_ERRORS = (OSError, EOFError)
+
+
+def not_running(ex: Exception) -> bool:
+    """Whether connecting failed because neither i3 nor sway is running."""
+    if isinstance(ex, (FileNotFoundError, ConnectionRefusedError)):
+        return True
+    # i3ipc raises a plain exception if it finds no socket
+    return type(ex) is Exception and "socket path" in str(ex)
 
 
 class _WaitAllSocket:
@@ -113,7 +122,8 @@ class I3WidgetMixin:
     """Runs `i3_start()` whenever connected to i3/sway IPC, and reconnects
     when the connection is lost, e.g. when i3 restarts. Handlers added with
     `i3_on()` are removed on reconnect. An exception raised by a handler
-    disables the widget, as one raised by `run()` does."""
+    disables the widget, as one raised by `run()` does. The widget is
+    hidden if neither i3 nor sway is running."""
 
     I3_RECONNECT_DELAY = 1.0
 
@@ -146,9 +156,16 @@ class I3WidgetMixin:
         while True:
             try:
                 conn, lost = await res_mgr.get_i3_connection_async()
-            except Exception:
-                # i3/sway is not running at all
+            except Exception as ex:
                 if not connected:
+                    if not_running(ex):
+                        # e.g. another compositor
+                        logging.info(
+                            "widget '%s': i3/sway is not running",
+                            self.widget_name,  # type: ignore[attr-defined]
+                        )
+                        self.set_available_i(False)  # type: ignore[attr-defined]
+                        return
                     raise
                 await anyio.sleep(self.I3_RECONNECT_DELAY)
                 continue

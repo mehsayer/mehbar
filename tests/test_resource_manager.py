@@ -44,13 +44,13 @@ def test_unknown_theme_is_not_active(make_res_mgr, caplog):
 
 
 @pytest.mark.parametrize(
-    ("argument", "expected"), [(None, "dark"), ("light", "light"), ("system", "light")]
+    ("argument", "expected"), [(None, "light"), ("dark", "dark"), ("system", "dark")]
 )
 def test_command_line_color_scheme_wins(make_res_mgr, monkeypatch, argument, expected):
-    # 'system' follows the desktop, which prefers nothing here
+    # 'system' follows the desktop, which prefers nothing here: dark is the default
     monkeypatch.setattr(resource_manager, "detect_color_scheme", lambda: None)
 
-    res_mgr = make_res_mgr('[bar]\ncolor_scheme = "dark"\n', color_scheme=argument)
+    res_mgr = make_res_mgr('[bar]\ncolor_scheme = "light"\n', color_scheme=argument)
 
     assert res_mgr.color_scheme == expected
 

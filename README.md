@@ -61,7 +61,12 @@ configuration define any. For the active color scheme, `config-dark.toml` or
 `config-light.toml`, and `style-dark.css` or `style-light.css`, are applied
 on top of each layer.
 
-The [base configuration](examples/_base/config.toml) is a complete example.
+Without a configuration, the [base configuration](examples/_base/config.toml)
+is used: workspaces, the focused window, CPU, memory, temperature, disk,
+network, volume, battery and the clock. It needs no adjustment: network
+interfaces and backends, and the CPU temperature sensor, are detected, and
+widgets of missing hardware or services are hidden. The base theme is dark,
+and so is the color scheme when the desktop has no preference.
 
 ### The bar
 
@@ -117,7 +122,10 @@ A widget that fails is disabled, and the error is logged, the rest of the bar
 keeps working. Temporary conditions do not disable widgets: a widget is
 hidden while, e.g., its device is unplugged or its service restarts, and
 shown again once it is back. Widgets reconnect to sway and to the sound
-server, and pick up restarted D-Bus services.
+server, and pick up restarted D-Bus services. Widgets of hardware or
+services that are missing altogether are hidden: `battery` without
+batteries, `wifi` and `wired` without interfaces, `i3_*` widgets without i3
+or sway.
 
 ### Labels
 
@@ -168,14 +176,14 @@ Fields are available in labels. Polling widgets need an `interval`.
 | `application` | `app_id` (desktop entry, e.g. `firefox.desktop`) or `app_name`, `files` | `name`, `id` | |
 | `backlight` | `driver` (`acpi` or `ddcci`), `device`, `step` | `percent` | brightness |
 | `battery` | | `percent`, `timeleft`, `status`, `plugged` | pairs of on battery, plugged in |
-| `bluetooth-status` | | `status`, `name`, `alias`, `battery`, `volume` | off, on, connected |
+| `bluetooth-status` | | `status`, `name`, `alias`, `battery_percent`, `volume_percent` | off, on, connected |
 | `cpu_fq` | | `fq`, `fq_min`, `fq_max` (GHz), `percent` | frequency |
 | `cpu_usage` | | `percent` | usage |
 | `datetime` | | `datetime` | hours of the day |
 | `disk_usage` | `path` | `percent`, `used_gib`, `avail_gib`, `total_gib` | usage |
 | `exec_repeat` | `cmdline`, `timeout` | see below | `ramp_level` |
 | `exec_tail` | `cmdline`, `max_lps` | see below | `ramp_level` |
-| `fan_speed` | `path`, `max_speed` | `rpm` with `path`, `<chip>/<label>` otherwise | speed |
+| `fan_speed` | `path`, `max_speed` | `rpm`, `<chip>/<label>` without `path` | speed |
 | `file` | `path` | see below | `ramp_level` |
 | `i3_kblayout` | `rewrite` | `layout` | |
 | `i3_mode` | `always_show`, `rewrite` | `mode` | |
@@ -188,8 +196,8 @@ Fields are available in labels. Polling widgets need an `interval`.
 | `pulse_volume` | `sink_name`, `max_volume`, `volume_delta` | `percent`, `muted` | muted, then volume |
 | `session` | | `username`, `uid`, `hostname`, `fqdn`, `uptime` | |
 | `static` | | | |
-| `temperature` | `path`, `max_temp` | `temp` with `path`, `<chip>/<label>` otherwise | temperature |
-| `wifi` | `backend`, `iface` | `ssid`, `percentage`, `rssi`, `security`, `ipv4`, `ipv6`, `hwaddr`, `iface` | no signal, then signal |
+| `temperature` | `path`, `max_temp` | `temp`, `<chip>/<label>` without `path` | temperature |
+| `wifi` | `backend`, `iface` | `ssid`, `percent`, `rssi`, `security`, `ipv4`, `ipv6`, `hwaddr`, `iface` | no signal, then signal |
 | `wired` | `backend`, `iface` | `ipv4`, `ipv6`, `hwaddr`, `name`, `iface` | down, no link, connected |
 
 Notes:
@@ -199,19 +207,23 @@ Notes:
   `file` the last line of a file. A string `cmdline` is run by the shell. A
   line containing a JSON object provides fields, and `ramp_level` selects the
   ramp entry; any other line is the `label` field.
-- `temperature` and `fan_speed` fields name sensors as `psutil` reports them,
+- `temperature` and `fan_speed` show the `path` file as `{temp}` and
+  `{rpm}`. Without `path`, `{temp}` is the CPU temperature, `{rpm}` the speed
+  of the fastest fan, and other fields name sensors as `psutil` reports them,
   e.g. `{k10temp/Tctl}`. Sensors repeated by chips of the same name, e.g. two
   NVMe drives, are numbered: `{nvme/Composite}`, `{nvme/Composite#2}`.
-- `wifi` backends: `NetworkManager`, `iwd`, `connman`, `wpa_supplicant` or
-  `unmanaged`; `wired` backends: `NetworkManager`, `connman` or `unmanaged`
-  (the default).
+- `wifi` and `wired` use the `iface` interface, or the first one found.
+  `wifi` backends: `NetworkManager`, `iwd`, `connman`, `wpa_supplicant` or
+  `unmanaged`; `wired` backends: `NetworkManager`, `connman` or `unmanaged`.
+  By default, `auto` picks the network service that is running. Signal
+  strength is mapped to percent as NetworkManager does, -100 to -40 dBm.
 - `network_rate` units are bytes per second: `B/s`, `KiB/s`, `MiB/s`.
   `conv_map` maps other unit names to their size in bytes.
 - `rewrite` maps regular expressions to replacements, the first expression
   matching at the start of the text wins, e.g. `"Eng.+" = "EN"`.
 - `playerctl` modules: `previous`, `next`, `seek_back`, `seek_forward`,
   `shuffle`, `play_pause`, `title` (`{artist}`, `{album}`, `{title}`),
-  `time` (`{current}`, `{total}`) and `volume` (`{volume}`), see
+  `time` (`{current}`, `{total}`) and `volume` (`{percent}`), see
   `DEFAULT_MODULES` in `src/mehbar/_widgets/playerctl.py`. Without
   `player_names`, it follows the player that plays.
 - `pulse_volume`: scrolling changes the volume, a right click toggles mute.

@@ -1,10 +1,16 @@
+# The built-in configuration, used when there is none, and the base of all
+# configurations: your config.toml overrides it. Its widgets are only shown
+# if your configuration defines none. Network interfaces, network backends
+# and the CPU temperature sensor are detected; widgets of missing hardware,
+# e.g. a battery, or of missing services, e.g. sway, are hidden.
+
 [bar]
-height = 32
-icon_size = 20
+position = "top"
 layer = "top"
-homogenous = true
-position = "bottom"
-gaps = [8, 8, 8, 8]
+height = 30
+icon_size = 16
+homogeneous = true
+gaps = [0, 0, 0, 0]
 
 # Phosphor icons, https://phosphoricons.com (MIT license, see icons/LICENSE).
 # Any of these names can be used in labels and ramps, e.g. "[icon=cpu;]".
@@ -85,138 +91,10 @@ file-text = "theme://file-text-symbolic.svg"
 line-vertical = "theme://line-vertical-symbolic.svg"
 
 
-[start.temperature]
-interval = 3
-type = "temperature"
-# cool, warm, hot
-ramp = [
-    "[icon=thermometer-cold;]",
-    "[icon=thermometer-simple;]",
-    "[icon=thermometer-hot;]",
-]
-label = "{k10temp/Tctl}°C"
-
-
-[start.browser]
-type = "application"
-# matched by name, Zen's desktop entry has a generated ID and no icon
-app_name = "Zen"
-label = "[icon=globe;]"
-
-
-[start.bluetooth]
-type = 'bluetooth-status'
-interval = 3
-# off, on, connected
-ramp = [
-    "[icon=bluetooth-slash;]",
-    "[icon=bluetooth;]",
-    "[icon=bluetooth-connected;]",
-]
-label = "{alias}"
-
-
-[center.cpu]
-interval = 3
-type = "cpu_usage"
-label = "[icon=cpu;]{percent}%"
-
-
-[center.memory]
-interval = 3
-type = "memory_usage"
-label = "[icon=memory;]{percent}%"
-
-
-[center.disk]
-interval = 3
-type = "disk_usage"
-label = "[icon=hard-drives;]{percent}%"
-
-
-[center.cpu_fq]
-interval = 3
-type = "cpu_fq"
-label = "[icon=gauge;]{fq} GHz {percent}%"
-
-
-[end.battery]
-type = "battery"
-interval = 3
-# pairs of on battery, plugged in; from empty to full
-ramp = [
-    "[icon=battery-warning;]", "[icon=battery-charging;]",
-    "[icon=battery-low;]", "[icon=battery-charging;]",
-    "[icon=battery-medium;]", "[icon=battery-charging;]",
-    "[icon=battery-high;]", "[icon=battery-charging;]",
-    "[icon=battery-full;]", "[icon=battery-full;]",
-]
-label = "{percent}% {timeleft}"
-
-
-[end.vol]
-type = "pulse_volume"
-# muted, then from silent to loud
-ramp = [
-    "[icon=speaker-x;]",
-    "[icon=speaker-none;]",
-    "[icon=speaker-low;]",
-    "[icon=speaker-high;]",
-]
-label = "{percent}%"
-
-
-[end.wlan]
-type = "wifi"
-iface = "wlp9s0"
-backend = "iwd"
-interval = 5
-# no signal, then from weak to strong
-ramp = [
-    "[icon=wifi-slash;]",
-    "[icon=wifi-none;]",
-    "[icon=wifi-low;]",
-    "[icon=wifi-medium;]",
-    "[icon=wifi-high;]",
-]
-label = "{ssid} {percentage}%"
-
-
-[end.kboard]
-type = "i3_kblayout"
-label = "[icon=keyboard;]{layout}"
-
-[end.kboard.rewrite]
-"Ukr\\w+" = "UA"
-"Eng\\w+" = "EN"
-
-
-[end.date]
-interval = 10
-type = "datetime"
-# time of day, three hours each
-ramp = [
-    "[icon=moon-stars;]",
-    "[icon=moon-stars;]",
-    "[icon=sun-horizon;]",
-    "[icon=sun;]",
-    "[icon=sun;]",
-    "[icon=sun;]",
-    "[icon=sun-horizon;]",
-    "[icon=moon;]",
-]
-label = "{datetime:%H:%M}"
-
-
-# Icons for other widgets, e.g.:
-#
 [start.workspaces]
 type = "i3_workspaces"
-always_show = ["1", "2", "3"]
-# empty, normal, focused, urgent
-ramp = ["[icon=circle-dashed;]", "[icon=circle;]", "[icon=circle-fill;]", "[icon=warning-circle;]"]
 label = "{name}"
-#
+
 [start.mode]
 type = "i3_mode"
 always_show = false
@@ -224,13 +102,109 @@ label = "[icon=command;]{mode}"
 
 [start.window]
 type = "i3_window"
-max_width_chars = 40
-label = "[icon=app-window;]{title}"
+always_show = false
+max_width_chars = 60
+label = "{title}"
+
+
+[end.cpu]
+type = "cpu_usage"
+interval = 3
+label = "[icon=cpu;]{percent}%"
+
+[end.memory]
+type = "memory_usage"
+interval = 3
+label = "[icon=memory;]{percent}%"
+
+[end.temperature]
+type = "temperature"
+interval = 3
+# cool, warm, hot
+ramp = [
+    "[icon=thermometer-cold;]",
+    "[icon=thermometer-simple;]",
+    "[icon=thermometer-hot; classes:icon=warning;]",
+]
+label = "{temp}°C"
+
+[end.disk]
+type = "disk_usage"
+interval = 30
+label = "[icon=hard-drives;]{percent}%"
+
+[end.wired]
+type = "wired"
+interval = 5
+# down, no link, connected
+ramp = [
+    "[icon=network-slash; classes=dim;]",
+    "[icon=network-x; classes=dim;]",
+    "[icon=network;]",
+]
+label = ""
+
+[end.wlan]
+type = "wifi"
+interval = 5
+# no signal, then from weak to strong
+ramp = [
+    "[icon=wifi-slash; classes=dim;]",
+    "[icon=wifi-none;]",
+    "[icon=wifi-low;]",
+    "[icon=wifi-medium;]",
+    "[icon=wifi-high;]",
+]
+max_width_chars = 16
+label = "{ssid}"
+
+[end.vol]
+type = "pulse_volume"
+# muted, then from silent to loud
+ramp = [
+    "[icon=speaker-x; classes=dim;]",
+    "[icon=speaker-none;]",
+    "[icon=speaker-low;]",
+    "[icon=speaker-high;]",
+]
+label = "{percent}%"
+
+[end.battery]
+type = "battery"
+interval = 10
+# pairs of on battery, plugged in; from empty to full
+ramp = [
+    "[icon=battery-warning; classes=critical;]", "[icon=battery-charging;]",
+    "[icon=battery-low;]", "[icon=battery-charging;]",
+    "[icon=battery-medium;]", "[icon=battery-charging;]",
+    "[icon=battery-high;]", "[icon=battery-charging;]",
+    "[icon=battery-full;]", "[icon=battery-full;]",
+]
+label = "{percent}%"
+
+[end.date]
+type = "datetime"
+interval = 60
+label = "{datetime:%a %d %b  %H:%M}"
+
+
+# Other widgets, e.g.:
 #
 # [start.scratchpad]
 # type = "i3_scratchpad"
 # always_show = false
 # label = "[icon=stack;]{count}"
+#
+# [start.browser]
+# type = "application"
+# app_id = "firefox"
+#
+# [end.bluetooth]
+# type = "bluetooth-status"
+# interval = 5
+# # off, on, connected
+# ramp = ["[icon=bluetooth-slash; classes=dim;]", "[icon=bluetooth;]", "[icon=bluetooth-connected;]"]
+# label = "{alias}"
 #
 # [end.backlight]
 # type = "backlight"
@@ -239,14 +213,6 @@ label = "[icon=app-window;]{title}"
 # # dim, medium, bright
 # ramp = ["[icon=sun-horizon;]", "[icon=sun-dim;]", "[icon=sun;]"]
 # label = "{percent}%"
-#
-# [end.wired]
-# type = "wired"
-# iface = "eth0"
-# interval = 5
-# # down, no link, connected
-# ramp = ["[icon=network-slash;]", "[icon=network-x;]", "[icon=network;]"]
-# label = "{ipv4}"
 #
 # [end.net]
 # type = "network_rate"
@@ -257,13 +223,19 @@ label = "[icon=app-window;]{title}"
 # type = "fan_speed"
 # interval = 5
 # label = "[icon=fan;]{rpm}"
-# path = "/sys/class/hwmon/hwmon0/fan1_input"
+#
+# [end.kboard]
+# type = "i3_kblayout"
+# label = "[icon=keyboard;]{layout}"
+#
+# [end.kboard.rewrite]
+# "Eng.+" = "EN"
 #
 # [end.session]
 # type = "session"
 # label = "[icon=user;]{username}@{hostname}"
 #
-# [end.player]
+# [center.player]
 # # uses play, pause, skip-back, skip-forward, rewind, fast-forward, shuffle,
 # # queue, music-note and timer icons by default
 # type = "playerctl"

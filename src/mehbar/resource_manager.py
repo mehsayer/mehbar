@@ -168,7 +168,7 @@ class ResourceManager:
 
     WIDGET_CFG_SECTIONS = ("start", "center", "end")
     COLOR_SCHEMES = ("light", "dark")
-    DEFAULT_COLOR_SCHEME = "light"
+    DEFAULT_COLOR_SCHEME = "dark"
 
     # wake-ups of widgets are spread over time, see `relax_interval()`
     INTERVAL_OFFSET = 0.5

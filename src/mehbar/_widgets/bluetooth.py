@@ -13,6 +13,7 @@ class WidgetBluetoothStatus(WidgetBase):
     status is polled as well."""
 
     TYPE = "bluetooth-status"
+    RAMP_BY_STATE = True
 
     # coalesce bursts of signals, e.g. when a device connects
     DEBOUNCE = 0.2
@@ -22,19 +23,14 @@ class WidgetBluetoothStatus(WidgetBase):
 
         self.backend = BluezBackend()
 
-    def ramp_index(self, ramp_level: int) -> int | None:
-        if ramp_level < 0 or not self.ramp:
-            return None
-        return min(ramp_level, len(self.ramp) - 1)
-
     def _show(self, info: BluetoothInfo):
         self.set_new_content_i(
             int(info.status),
             status=info.status.name.lower(),
             name=info.name,
             alias=info.alias,
-            battery=info.bat_percent if info.bat_percent >= 0 else None,
-            volume=info.volume if info.volume >= 0 else None,
+            battery_percent=info.battery_percent,
+            volume_percent=info.volume_percent,
         )
 
     async def _poll(self, sstream: ObjectSendStream):

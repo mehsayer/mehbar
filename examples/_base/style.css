@@ -1,16 +1,66 @@
-window.background {
-    background: unset;
+/*
+ * The base theme, a neutral dark look. Themes are applied on top of it, and
+ * your own style.css on top of both.
+ *
+ * Ramp entries may set the state classes defined at the end, e.g.
+ *     "[icon=battery-warning; classes=critical;]"
+ *     "[icon=speaker-x; classes=dim;]"
+ */
+
+@define-color mb_bg #1c1c1f;
+@define-color mb_bg_dark #151517;
+@define-color mb_bg_highlight #2c2c31;
+@define-color mb_border #3a3a40;
+@define-color mb_dim #6c6c75;
+@define-color mb_fg_dark #8b8b94;
+@define-color mb_fg #c8c8cc;
+@define-color mb_fg_bright #e4e4e7;
+@define-color mb_blue #7aa7d9;
+@define-color mb_magenta #c49bdc;
+@define-color mb_green #9bc77a;
+@define-color mb_yellow #dcb468;
+@define-color mb_red #e8747e;
+
+
+/* Bar */
+
+window.background,
+box {
+    background: none;
 }
 
-box {
-    background-color: #efdddd;
-    margin: 0 0 0 0;
+.bar-horizontal {
+    background-color: alpha(@mb_bg, 0.95);
 }
+
+.bar-top {
+    box-shadow: inset 0 -1px @mb_bg_highlight;
+}
+
+.bar-bottom {
+    box-shadow: inset 0 1px @mb_bg_highlight;
+}
+
+#start {
+    padding-left: 8px;
+}
+
 #end {
     padding-right: 8px;
 }
-#start {
-    padding-left: 8px;
+
+
+/* Widgets */
+
+.bar-widget {
+    color: @mb_fg;
+    font-family: monospace;
+    font-size: 10pt;
+    padding: 0 6px;
+}
+
+.bar-widget-icon {
+    color: @mb_fg_dark;
 }
 
 .bar-horizontal .bar-widget-icon-start {
@@ -25,18 +75,125 @@ box {
     padding: 0 0.5ex;
 }
 
+.bar-widget.datetime {
+    color: @mb_fg_bright;
+}
+
+.bar-widget.i3_window {
+    color: @mb_fg_dark;
+}
+
+.bar-widget.i3_mode {
+    color: @mb_magenta;
+    background-color: alpha(@mb_magenta, 0.12);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin: 0 4px;
+}
+
+.bar-widget.i3_mode .bar-widget-icon {
+    color: inherit;
+}
+
+
+/* i3 / sway workspaces */
+
+.i3-workspace {
+    color: @mb_fg_dark;
+    padding: 0 8px;
+    margin: 0;
+    border-radius: 4px;
+    transition: color 120ms ease-out, background-color 120ms ease-out;
+}
+
+.i3-workspace .bar-widget-icon {
+    color: inherit;
+}
+
+.i3-workspace:hover {
+    background-color: alpha(@mb_bg_highlight, 0.6);
+}
+
+.i3-workspace.empty {
+    color: @mb_dim;
+}
+
+.i3-workspace.visible {
+    color: @mb_fg;
+}
+
+.i3-workspace.focused {
+    color: @mb_fg_bright;
+    background-color: @mb_bg_highlight;
+}
+
+.i3-workspace.urgent {
+    color: @mb_red;
+    background-color: alpha(@mb_red, 0.12);
+}
+
+
+/* Media player */
+
+.playerctl-button {
+    color: @mb_fg_dark;
+}
+
+.playerctl-button,
 #playerctl-previous,
 #playerctl-play-pause,
 #playerctl-next {
-    padding: 0 8px 0 8px;
+    padding: 0 8px;
 }
-.i3-workspace {
-    padding: 0 8px 0 8px;
+
+.playerctl-button .bar-widget-icon {
+    color: inherit;
+}
+
+.playerctl-button:hover {
+    color: @mb_blue;
 }
 
 
-.bar-widget {
-    font-size: 10pt;
-    padding: 0 6px 0 6px;
-    font-family: "Monospace";
+/* Tooltips */
+
+tooltip {
+    color: @mb_fg;
+    background-color: @mb_bg_dark;
+    border: 1px solid @mb_border;
+    border-radius: 6px;
+}
+
+
+/* State classes for ramps, on the widget, the label or the icon. On the
+   widget, they must win over the widget type rules above. */
+
+.dim,
+.bar-widget.dim,
+.dim .bar-widget-icon {
+    color: @mb_dim;
+}
+
+.accent,
+.bar-widget.accent,
+.accent .bar-widget-icon {
+    color: @mb_blue;
+}
+
+.good,
+.bar-widget.good,
+.good .bar-widget-icon {
+    color: @mb_green;
+}
+
+.warning,
+.bar-widget.warning,
+.warning .bar-widget-icon {
+    color: @mb_yellow;
+}
+
+.critical,
+.bar-widget.critical,
+.critical .bar-widget-icon {
+    color: @mb_red;
 }

@@ -10,7 +10,7 @@ from gi.repository import GLib, Gtk, Playerctl  # type: ignore
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.widget import BarWidget, WidgetBase, WidgetContent
+from mehbar.widget import BarWidget, HorizontalScroller, WidgetBase, WidgetContent
 
 
 def format_time(seconds: int) -> str:
@@ -55,8 +55,6 @@ class WidgetPlayerCtl(BarWidget):
     """Media player controls. Unlike other widgets, it runs entirely on GTK
     main thread: Playerctl signals are delivered there."""
 
-    MAX_SCROLL_SPEED = 100
-    MIN_SCROLL_SPEED = 1
     DEFAULT_SEEK_OFFSET = 10
     TICKER_STEP = 10
 
@@ -229,7 +227,7 @@ class WidgetPlayerCtl(BarWidget):
                 self.btn_volume = PlayerctlButton(
                     "playerctl-volume",
                     self.res_mgr,
-                    module.get("format", "{volume}%"),
+                    module.get("label_format", "{percent}%"),
                     module.get("label_empty"),
                 )
                 self.append(self.btn_volume)
@@ -248,39 +246,15 @@ class WidgetPlayerCtl(BarWidget):
             module.get("label_empty", ""),
         )
 
-        scroll_view = Gtk.ScrolledWindow.new()
+        scroller = HorizontalScroller(
+            self.btn_title, scroll_width, scroll_speed, self.guard
+        )
 
-        if scroll_width > 0:
-            scroll_speed = max(
-                self.MIN_SCROLL_SPEED, min(scroll_speed, self.MAX_SCROLL_SPEED)
-            )
-            scroll_view.set_min_content_width(scroll_width)
-            scroll_view.set_size_request(scroll_width, -1)
-            scroll_view.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+        # the ticker scrolls only if the width is limited
+        if scroller.viewport is not None:
+            self.h_adj = scroller.get_hadjustment()
 
-            viewport = Gtk.Viewport.new()
-            viewport.set_child(self.btn_title)
-            viewport.set_scroll_to_focus(False)
-
-            h_adj = scroll_view.get_hadjustment()
-            self.h_adj = h_adj
-
-            def _scroll(_ctrl, _dx, dy):
-                h_adj.set_value(h_adj.get_value() + (dy * scroll_speed))
-                return True
-
-            scroll_ctrl = Gtk.EventControllerScroll.new(
-                Gtk.EventControllerScrollFlags.VERTICAL
-            )
-            scroll_ctrl.connect("scroll", self.guard(_scroll))
-            viewport.add_controller(scroll_ctrl)
-            scroll_view.set_child(viewport)
-        else:
-            scroll_view.set_propagate_natural_width(True)
-            scroll_view.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-            scroll_view.set_child(self.btn_title)
-
-        self.append(scroll_view)
+        self.append(scroller)
 
     # Players
 
@@ -384,7 +358,7 @@ class WidgetPlayerCtl(BarWidget):
 
     def _on_volume(self, player: Playerctl.Player, volume: float):
         if player is self.player and self.btn_volume is not None:
-            self.btn_volume.show_fields(volume=round(volume * 100))
+            self.btn_volume.show_fields(percent=round(volume * 100))
 
     def _on_shuffle(self, player: Playerctl.Player, shuffle_status: bool):
         if player is self.player and self.btn_shuffle is not None:

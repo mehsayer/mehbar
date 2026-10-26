@@ -181,3 +181,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# code review notes
+reports/
+research_notes/

@@ -25,6 +25,18 @@ def test_sensor_values_keeps_sensors_of_same_named_chips():
     }
 
 
+def test_cpu_temperature_is_preferred():
+    from mehbar._widgets.temperature import WidgetTemperature
+
+    auto_value = WidgetTemperature.auto_value
+    values = {"nvme/Composite": 45, "k10temp/Tctl": 38, "acpitz": 27}
+
+    assert auto_value(values) == 38
+    # the hottest sensor, if the CPU sensor is not known
+    assert auto_value({"nvme/Composite": 45, "foo/bar": 50}) == 50
+    assert auto_value({}) is None
+
+
 def test_check_fields():
     assert check_fields(["temp", "ramp"], ["temp"]) == ["temp"]
 

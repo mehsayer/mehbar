@@ -18,8 +18,8 @@ class BluetoothInfo:
     name: str | None = None
     alias: str | None = None
     icon: str | None = None
-    bat_percent: int = -1
-    volume: int = -1
+    battery_percent: int | None = None
+    volume_percent: int | None = None
 
 
 class BluezBackend(DBusFacade):
@@ -29,6 +29,16 @@ class BluezBackend(DBusFacade):
     DEVICE_IFACE = "org.bluez.Device1"
     BATTERY_IFACE = "org.bluez.Battery1"
     MTRANS_IFACE = "org.bluez.MediaTransport1"
+
+    # A2DP (AVRCP) volumes are 0..127, LE Audio volumes 0..255
+    A2DP_UUIDS = frozenset(
+        {
+            "0000110a-0000-1000-8000-00805f9b34fb",
+            "0000110b-0000-1000-8000-00805f9b34fb",
+        }
+    )
+    A2DP_MAX_VOLUME = 127
+    LE_AUDIO_MAX_VOLUME = 255
 
     # Device properties that change often but do not affect the status
     NOISY_PROPS = frozenset({"RSSI", "TxPower", "ManufacturerData", "ServiceData"})
@@ -57,13 +67,13 @@ class BluezBackend(DBusFacade):
             if not dev_props or not dev_props.get("Connected", False):
                 continue
 
-            bat_percent = ifaces.get(self.BATTERY_IFACE, {}).get("Percentage", -1)
+            battery = ifaces.get(self.BATTERY_IFACE, {}).get("Percentage")
 
-            volume = -1
+            volume = None
             for ifaces_ in objects.values():
                 mtrans = ifaces_.get(self.MTRANS_IFACE)
                 if mtrans and mtrans.get("Device") == path:
-                    volume = mtrans.get("Volume", -1)
+                    volume = self.volume_percent(mtrans)
                     break
 
             return BluetoothInfo(
@@ -72,11 +82,23 @@ class BluezBackend(DBusFacade):
                 dev_props.get("Name"),
                 dev_props.get("Alias"),
                 dev_props.get("Icon"),
-                bat_percent,
+                battery,
                 volume,
             )
 
         return BluetoothInfo(BluetoothStatus.ON)
+
+    @classmethod
+    def volume_percent(cls, mtrans: dict) -> int | None:
+        if (volume := mtrans.get("Volume")) is None:
+            return None
+
+        if mtrans.get("UUID", "").lower() in cls.A2DP_UUIDS:
+            max_volume = cls.A2DP_MAX_VOLUME
+        else:
+            max_volume = cls.LE_AUDIO_MAX_VOLUME
+
+        return round(100 * min(volume, max_volume) / max_volume)
 
     def subscribe(self, callback: Callable[[], None]) -> list[int]:
         """Calls `callback` on GTK main thread whenever adapters or devices

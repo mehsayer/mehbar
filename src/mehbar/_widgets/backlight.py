@@ -1,11 +1,11 @@
 from functools import partial
 
 import anyio
-from anyio.abc import ObjectReceiveStream, ObjectSendStream
+from anyio.abc import ObjectReceiveStream
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.widget import WidgetBase
+from mehbar.widget import RequestQueue, WidgetBase
 
 from ._backlight import BacklightACPI, BacklightDDCCI, BacklightInterface
 
@@ -16,7 +16,6 @@ class WidgetBacklight(WidgetBase):
     DRIVERS = {"acpi": BacklightACPI, "ddcci": BacklightDDCCI}
     UNIQUE = False
     TYPE = "backlight"
-    QUEUE_SIZE = 8
 
     def __init__(self, name: str, res_mgr: ResourceManager):
         super().__init__(name, res_mgr)
@@ -35,24 +34,17 @@ class WidgetBacklight(WidgetBase):
 
         self.step = max(self.cfg.get("step", 1), 1)
 
-        self._sstream: ObjectSendStream[int] | None = None
+        # brightness changes by a delta, 0 refreshes
+        self.requests = RequestQueue(res_mgr.loop)
 
         self.onscroll_call(
-            partial(self.call_soon, self._request, self.step),
-            partial(self.call_soon, self._request, -self.step),
+            partial(self.requests.put, self.step),
+            partial(self.requests.put, -self.step),
         )
-
-    def _request(self, delta: int):
-        """Requests a brightness change by `delta`, 0 to refresh."""
-        if self._sstream is not None:
-            try:
-                self._sstream.send_nowait(delta)
-            except (anyio.WouldBlock, anyio.ClosedResourceError):
-                pass
 
     async def _poll(self):
         while await self.sleep_interval():
-            self._request(0)
+            self.requests.put(0)
 
     async def _consume(
         self, driver: BacklightInterface, rstream: ObjectReceiveStream[int]
@@ -68,12 +60,7 @@ class WidgetBacklight(WidgetBase):
                 self.set_new_content_i(percent, percent=percent)
 
     async def run(self):
-        self._sstream, rstream = anyio.create_memory_object_stream[int](self.QUEUE_SIZE)
-
-        try:
+        with self.requests.receive() as rstream:
             async with self.driver as driver, anyio.create_task_group() as grp:
                 grp.start_soon(self._poll)
                 grp.start_soon(self._consume, driver, rstream)
-        finally:
-            self._sstream.close()
-            self._sstream = None

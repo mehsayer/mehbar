@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-
-import enum
 from dataclasses import dataclass, field
 
 from gi.repository import GLib  # type: ignore
@@ -8,25 +5,12 @@ from gi.repository import GLib  # type: ignore
 from mehbar.exceptions import CapabilityError
 
 from ._dbus_facade import DBusFacade, DBusUnavailable, is_null_path
+from ._net import ConnManMixin, NetOptions, NetworkManagerMixin, fill_addresses
 
+# signal strength scale of NetworkManager, so that percentages and levels of
+# all backends match
 MIN_RSSI = -100
-MAX_RSSI = -30
-
-
-class WifiOptions(enum.Flag):
-    NONE = 0
-    HWADDR = enum.auto()
-    IPV4 = enum.auto()
-    IPV6 = enum.auto()
-    PERCENTAGE = enum.auto()
-    RSSI = enum.auto()
-    SECURITY = enum.auto()
-    SSID = enum.auto()
-    SIGNAL = PERCENTAGE | RSSI
-
-    @classmethod
-    def for_name(cls, name: str) -> "WifiOptions":
-        return cls.__members__.get(name.upper(), cls.NONE)
+MAX_RSSI = -40
 
 
 @dataclass
@@ -34,7 +18,7 @@ class WifiInfo:
     iface: str | None
     ssid: str | None
     rssi: int | None
-    percentage: int | None
+    percent: int | None
     hwaddr: str | None = field(default=None)
     security: str | None = field(default=None)
     ipv4: str | None = field(default=None)
@@ -42,12 +26,13 @@ class WifiInfo:
 
 
 def rssi_to_strength(rssi: float | int) -> int:
-    pcnt = round(100 * (1 - (MAX_RSSI - rssi) / (MAX_RSSI - MIN_RSSI)))
-    return max(0, min(pcnt, 100))
+    """Maps the signal level in dBm to percent, as NetworkManager does."""
+    rssi = max(MIN_RSSI, min(rssi, MAX_RSSI))
+    return 100 - int(100 * (MAX_RSSI - rssi) / (MAX_RSSI - MIN_RSSI))
 
 
-def strength_to_rssi(percentage: float | int) -> int:
-    return round((percentage * (MAX_RSSI - MIN_RSSI)) / 100 + MIN_RSSI)
+def strength_to_rssi(percent: float | int) -> int:
+    return round(MAX_RSSI - (100 - percent) * (MAX_RSSI - MIN_RSSI) / 100)
 
 
 def decode_ssid(ssid: bytes | list[int] | None) -> str | None:
@@ -56,99 +41,44 @@ def decode_ssid(ssid: bytes | list[int] | None) -> str | None:
     return bytes(ssid).decode("utf-8", "replace")
 
 
-def fill_missing(info: WifiInfo, options: WifiOptions) -> WifiInfo:
-    from psutil import net_if_addrs
-
-    if WifiOptions.SIGNAL & options:
-        if info.rssi is None and info.percentage is not None:
-            info.rssi = strength_to_rssi(info.percentage)
-        elif info.percentage is None and info.rssi is not None:
-            info.percentage = rssi_to_strength(info.rssi)
-
-    get_hwaddr = WifiOptions.HWADDR in options and info.hwaddr is None
-    get_ipv4 = WifiOptions.IPV4 in options and info.ipv4 is None
-    get_ipv6 = WifiOptions.IPV6 in options and info.ipv6 is None
-
-    if info.iface is not None and (get_hwaddr or get_ipv4 or get_ipv6):
-        for snic in net_if_addrs().get(info.iface, []):
-            if get_ipv4 and snic.family.name == "AF_INET":
-                info.ipv4 = snic.address
-            elif get_ipv6 and snic.family.name == "AF_INET6":
-                if snic.address:
-                    # strip the zone index of link-local addresses
-                    info.ipv6 = snic.address.split("%", 1)[0]
-            elif get_hwaddr and snic.family.name in ["AF_LINK", "AF_PACKET"]:
-                if snic.address is not None:
-                    info.hwaddr = snic.address.upper()
-
-    return info
-
-
 class WifiInfoQuery:
     """Backends are synchronous, call `get_info()` in a worker thread."""
 
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         raise NotImplementedError()
 
-    def get_info(self, iface: str, options: WifiOptions) -> WifiInfo:
-        return fill_missing(self.get_info_(iface, options), options)
+    def get_info(self, iface: str, options: NetOptions) -> WifiInfo:
+        info = self.get_info_(iface, options)
+
+        if NetOptions.SIGNAL & options:
+            if info.rssi is None and info.percent is not None:
+                info.rssi = strength_to_rssi(info.percent)
+            elif info.percent is None and info.rssi is not None:
+                info.percent = rssi_to_strength(info.rssi)
+
+        return fill_addresses(info, options)
 
 
-class NetworkManagerBackend(DBusFacade, WifiInfoQuery):
-    BASE_SVC = "org.freedesktop.NetworkManager"
-    BASE_OBJ = "/org/freedesktop/NetworkManager"
-    BASE_IFACE = "org.freedesktop.NetworkManager"
-
+class NetworkManagerBackend(NetworkManagerMixin, WifiInfoQuery):
     AP_IFACE = "org.freedesktop.NetworkManager.AccessPoint"
-    ACT_CONN_IFACE = "org.freedesktop.NetworkManager.Connection.Active"
     CONN_IFACE = "org.freedesktop.NetworkManager.Settings.Connection"
-    DEV_IFACE = "org.freedesktop.NetworkManager.Device"
     DEV_WL_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
 
-    UNAVAILABLE_ERROR_NAMES = frozenset(
-        {"org.freedesktop.NetworkManager.UnknownDevice"}
-    )
-
-    def get_ipaddr(self, cfg_obj: str | None, ip_ver: int) -> str | None:
-        if is_null_path(cfg_obj):
-            return None
-
-        addr_data = self.get_prop(
-            cfg_obj, f"{self.BASE_IFACE}.IP{ip_ver}Config", "AddressData"
-        )
-        return addr_data[0]["address"] if addr_data else None
-
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         info = WifiInfo(iface, None, None, None)
 
-        (dev_obj,) = self.call(
-            self.BASE_OBJ,
-            self.BASE_IFACE,
-            "GetDeviceByIpIface",
-            GLib.Variant("(s)", (iface,)),
-            "(o)",
-        )
+        dev_obj, dev_props = self.get_device(iface)
+        self.fill_device(info, dev_props, options)
 
-        dev_props = self.get_all_props(dev_obj, self.DEV_IFACE)
-
-        if WifiOptions.HWADDR in options:
-            info.hwaddr = dev_props.get("HwAddress")
-
-        if WifiOptions.IPV4 in options:
-            info.ipv4 = self.get_ipaddr(dev_props.get("Ip4Config"), 4)
-
-        if WifiOptions.IPV6 in options:
-            info.ipv6 = self.get_ipaddr(dev_props.get("Ip6Config"), 6)
-
-        if (WifiOptions.SIGNAL | WifiOptions.SSID) & options:
+        if (NetOptions.SIGNAL | NetOptions.SSID) & options:
             ap_obj = self.get_prop(dev_obj, self.DEV_WL_IFACE, "ActiveAccessPoint")
 
             if not is_null_path(ap_obj):
                 ap_props = self.get_all_props(ap_obj, self.AP_IFACE)
-                info.percentage = ap_props.get("Strength")
+                info.percent = ap_props.get("Strength")
                 info.ssid = decode_ssid(ap_props.get("Ssid"))
 
-        if WifiOptions.SECURITY in options:
+        if NetOptions.SECURITY in options:
             act_conn_obj = dev_props.get("ActiveConnection")
 
             if not is_null_path(act_conn_obj):
@@ -179,7 +109,7 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
 
     UNAVAILABLE_ERROR_NAMES = frozenset({"fi.w1.wpa_supplicant1.InterfaceUnknown"})
 
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         info = WifiInfo(iface, None, None, None)
 
         (iface_obj,) = self.call(
@@ -192,19 +122,19 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
 
         iface_props = self.get_all_props(iface_obj, self.IFACE_IFACE)
 
-        if WifiOptions.HWADDR in options:
+        if NetOptions.HWADDR in options:
             if hwaddr := iface_props.get("MACAddress"):
                 info.hwaddr = ":".join(f"{n:02X}" for n in hwaddr)
 
         bss_obj = iface_props.get("CurrentBSS")
 
-        if (WifiOptions.SSID | WifiOptions.SIGNAL) & options:
+        if (NetOptions.SSID | NetOptions.SIGNAL) & options:
             if not is_null_path(bss_obj):
                 bss_props = self.get_all_props(bss_obj, self.IFACE_BSS)
                 info.ssid = decode_ssid(bss_props.get("SSID"))
                 info.rssi = bss_props.get("Signal")
 
-        if WifiOptions.SECURITY in options:
+        if NetOptions.SECURITY in options:
             netw_obj = iface_props.get("CurrentNetwork")
 
             if not is_null_path(netw_obj):
@@ -222,10 +152,10 @@ class WPASupplicantBackend(DBusFacade, WifiInfoQuery):
 class UnmanagedBackend(WifiInfoQuery):
     PATH_WIRELESS = "/proc/net/wireless"
 
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         rssi = None
 
-        if WifiOptions.SIGNAL & options:
+        if NetOptions.SIGNAL & options:
             with open(self.PATH_WIRELESS, "r") as fhandle:
                 for ln in fhandle:
                     ln_split = ln.split(maxsplit=4)
@@ -282,7 +212,7 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
 
         return None
 
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         info = WifiInfo(iface, None, None, None)
 
         objects = self.get_managed_objects()
@@ -299,22 +229,22 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
             if not dev_props.get("Powered", False):
                 break
 
-            if WifiOptions.HWADDR in options:
+            if NetOptions.HWADDR in options:
                 if hwaddr := dev_props.get("Address"):
                     info.hwaddr = hwaddr.upper()
 
             stn_props = interfaces.get(self.STATION_IFACE) or {}
 
             if conn_netw := stn_props.get("ConnectedNetwork"):
-                if WifiOptions.SIGNAL & options:
+                if NetOptions.SIGNAL & options:
                     info.rssi = self._get_rssi(stn_path, conn_netw)
 
                 netw_props = objects.get(conn_netw, {}).get(self.NETWORK_IFACE, {})
 
-                if WifiOptions.SSID in options:
+                if NetOptions.SSID in options:
                     info.ssid = netw_props.get("Name")
 
-                if WifiOptions.SECURITY in options:
+                if NetOptions.SECURITY in options:
                     if security := netw_props.get("Type"):
                         info.security = security.upper()
             break
@@ -322,48 +252,24 @@ class IWDBackend(DBusFacade, WifiInfoQuery):
         return info
 
 
-class ConnManBackend(DBusFacade, WifiInfoQuery):
-    BASE_SVC = "net.connman"
-    BASE_OBJ = "/"
-    BASE_IFACE = "net.connman.Manager"
-
-    def get_info_(self, iface: str, options: WifiOptions) -> WifiInfo:
+class ConnManBackend(ConnManMixin, WifiInfoQuery):
+    def get_info_(self, iface: str, options: NetOptions) -> WifiInfo:
         info = WifiInfo(iface, None, None, None)
 
-        (services,) = self.call(
-            self.BASE_OBJ, self.BASE_IFACE, "GetServices", None, "(a(oa{sv}))"
-        )
+        if (svc := self.get_service(iface, "wifi")) is None:
+            return info
 
-        for _, svc in services:
-            if svc.get("Type") != "wifi" or svc.get("State") not in ("ready", "online"):
-                continue
+        self.fill_service(info, svc, options)
 
-            if (
-                not (eth_obj := svc.get("Ethernet"))
-                or eth_obj.get("Interface") != iface
-            ):
-                continue
+        if NetOptions.SECURITY in options:
+            if sec := svc.get("Security"):
+                info.security = ", ".join(sec).upper()
 
-            if WifiOptions.SECURITY in options:
-                if sec := svc.get("Security"):
-                    info.security = ", ".join(sec).upper()
+        if NetOptions.SSID in options:
+            info.ssid = svc.get("Name")
 
-            if WifiOptions.SSID in options:
-                info.ssid = svc.get("Name")
-
-            if WifiOptions.SIGNAL & options:
-                info.percentage = round(svc.get("Strength", 0))
-
-            if WifiOptions.HWADDR in options:
-                info.hwaddr = eth_obj.get("Address")
-
-            if WifiOptions.IPV4 in options:
-                if ipv4_obj := svc.get("IPv4"):
-                    info.ipv4 = ipv4_obj.get("Address")
-
-            if WifiOptions.IPV6 in options:
-                if ipv6_obj := svc.get("IPv6"):
-                    info.ipv6 = ipv6_obj.get("Address")
-            break
+        if NetOptions.SIGNAL & options:
+            if (strength := svc.get("Strength")) is not None:
+                info.percent = round(strength)
 
         return info

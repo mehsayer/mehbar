@@ -5,18 +5,20 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache, wraps
 from typing import Any
 
 import anyio
+from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from gi.repository import GLib, Gtk, Pango  # type: ignore
 
 from .actions import ActionInterface, CallableAction, ExecAction
 from .exceptions import BarConfigError
-from .resource_manager import ResourceManager
+from .resource_manager import EventLoopBridge, ResourceManager
 from .tools import OptionalFormatter, describe_exception, next_prime, split_format
 
 
@@ -177,6 +179,46 @@ class WidgetContent:
         )
 
 
+def spread_index(level: float, max_level: float, count: int) -> int:
+    """Maps `level` in 0..`max_level` to one of `count` equal ranges."""
+    return int(min(max(level, 0), max_level - 1) / (max_level / count))
+
+
+class RequestQueue:
+    """Passes requests, e.g. of input handlers on GTK main thread, to the
+    widget event loop. Requests are dropped while nothing receives them or
+    while the queue is full."""
+
+    def __init__(self, loop: EventLoopBridge, size: int = 8):
+        self._loop = loop
+        self._size = size
+        self._send: ObjectSendStream | None = None
+
+    def put(self, request: Any):
+        """Safe to call from any thread."""
+        self._loop.call_soon(self._put, request)
+
+    def _put(self, request: Any):
+        if self._send is not None:
+            try:
+                self._send.send_nowait(request)
+            except (anyio.WouldBlock, anyio.ClosedResourceError):
+                pass
+
+    @contextmanager
+    def receive(self) -> Iterator[ObjectReceiveStream]:
+        """Yields the stream of requests, event loop thread only."""
+        send, receive = anyio.create_memory_object_stream[Any](self._size)
+        self._send = send
+
+        try:
+            yield receive
+        finally:
+            self._send = None
+            send.close()
+            receive.close()
+
+
 class IdleUpdater:
     """Calls `apply` with the most recently submitted value on GTK main
     thread. Values superseded before GTK main thread catches up are dropped,
@@ -276,6 +318,53 @@ class JSONInputMixin:
             ramp_level = -1
 
         self.set_content_i(self.format_content(ramp_level, values))  # type: ignore[attr-defined]
+
+
+class HorizontalScroller(Gtk.ScrolledWindow):
+    """Shows `child` in at most `width` pixels, scrolled by the mouse wheel
+    at `speed` pixels per step, or in its full width if `width` is 0.
+    `guard` wraps the scroll handler, see `BarWidget.guard()`."""
+
+    MIN_SPEED = 1
+    MAX_SPEED = 100
+
+    def __init__(self, child: Gtk.Widget, width: int, speed: float, guard: Callable):
+        super().__init__()
+
+        self.set_propagate_natural_height(True)
+        self.set_has_frame(False)
+        self.set_kinetic_scrolling(False)
+
+        self.viewport: Gtk.Viewport | None = None
+
+        if width <= 0:
+            self.set_propagate_natural_width(True)
+            self.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+            self.set_child(child)
+            return
+
+        speed = max(self.MIN_SPEED, min(speed, self.MAX_SPEED))
+
+        self.set_min_content_width(width)
+        self.set_size_request(width, -1)
+        self.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+
+        self.viewport = Gtk.Viewport.new()
+        self.viewport.set_child(child)
+        self.viewport.set_scroll_to_focus(False)
+
+        h_adj = self.get_hadjustment()
+
+        def _scroll(_ctrl, _dx, dy):
+            h_adj.set_value(h_adj.get_value() + dy * speed)
+            return True
+
+        scroll_ctrl = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        scroll_ctrl.connect("scroll", guard(_scroll))
+        self.viewport.add_controller(scroll_ctrl)
+        self.set_child(self.viewport)
 
 
 class BarWidget(Gtk.Box):
@@ -531,6 +620,9 @@ class WidgetBase(BarWidget):
     or `layout_specs`, texts the widget may show otherwise."""
 
     DFL_RAMP_IDX = 100
+    # ramp entries are for states, e.g. off, on, connected: the ramp level is
+    # the index of the entry
+    RAMP_BY_STATE = False
 
     def __init__(
         self,
@@ -683,8 +775,10 @@ class WidgetBase(BarWidget):
         if ramp_level < 0 or not self.ramp:
             return None
 
-        level = min(ramp_level, self.max_ramp_level - 1)
-        return int(level / (self.max_ramp_level / len(self.ramp)))
+        if self.RAMP_BY_STATE:
+            return min(ramp_level, len(self.ramp) - 1)
+
+        return spread_index(ramp_level, self.max_ramp_level, len(self.ramp))
 
     def get_ramp(self, ramp_level: int = -1) -> WidgetContent | None:
         if (idx := self.ramp_index(ramp_level)) is None:

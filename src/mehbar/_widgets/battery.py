@@ -1,9 +1,8 @@
-import errno
 from dataclasses import dataclass
 from pathlib import Path
 
 from mehbar.tools import FormattableTimeDelta
-from mehbar.widget import WidgetBase
+from mehbar.widget import WidgetBase, spread_index
 
 POWER_SUPPLY_PATH = Path("/sys/class/power_supply")
 
@@ -149,8 +148,8 @@ def read_batteries(root: Path = POWER_SUPPLY_PATH) -> BatteryInfo | None:
 class WidgetBattery(WidgetBase):
     """Shows the combined charge of all system batteries. Label fields:
     `percent`, `timeleft`, `status`, `plugged`. Ramp entries come in pairs:
-    on battery, plugged in. The widget is hidden while batteries that were
-    present are removed."""
+    on battery, plugged in. The widget is hidden while there are no
+    batteries."""
 
     MAX_CHARGE = 100
     TYPE = "battery"
@@ -161,28 +160,19 @@ class WidgetBattery(WidgetBase):
             return None
 
         plugged, level = divmod(ramp_level, 1000)
-        level = max(min(level, self.MAX_CHARGE - 1), 0)
         npairs = max(len(self.ramp) // 2, 1)
-
-        idx = int(level / (self.MAX_CHARGE / npairs)) * 2 + (1 if plugged else 0)
+        idx = spread_index(level, self.MAX_CHARGE, npairs) * 2 + (1 if plugged else 0)
 
         return min(idx, len(self.ramp) - 1)
 
     async def run(self):
-        seen = False
-
         while await self.sleep_interval():
             info = read_batteries()
 
-            if not seen:
-                if info is None:
-                    raise OSError(errno.ENODEV, "no battery detected")
-                seen = True
-
+            # e.g. a desktop, a swapped battery or a reloaded driver
             self.set_available_i(info is not None)
 
             if info is None:
-                # e.g. swapped, or the driver is reloaded
                 continue
 
             timeleft = None

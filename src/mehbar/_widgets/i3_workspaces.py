@@ -7,7 +7,13 @@ from i3ipc import Event, WorkspaceEvent
 
 from mehbar.exceptions import BarConfigError
 from mehbar.resource_manager import ResourceManager
-from mehbar.widget import BarWidget, IdleUpdater, RewriteMixin, WidgetBase
+from mehbar.widget import (
+    BarWidget,
+    HorizontalScroller,
+    IdleUpdater,
+    RewriteMixin,
+    WidgetBase,
+)
 
 from ._i3 import I3Connection, I3WidgetMixin
 
@@ -55,10 +61,7 @@ class I3WorkspaceButton(WidgetBase):
         self.add_css_class("i3-workspace")
         self.onclick_call(1, self.run_soon, parent.switch_to, ws_name)
 
-    def ramp_index(self, ramp_level: int) -> int | None:
-        if ramp_level < 0 or not self.ramp:
-            return None
-        return min(ramp_level, len(self.ramp) - 1)
+    RAMP_BY_STATE = True
 
     def update(self, state: WorkspaceState):
         """Must be called from GTK main thread."""
@@ -80,7 +83,6 @@ class WidgetI3Workspaces(I3WidgetMixin, RewriteMixin, BarWidget):
     `always_show` are shown even if they do not exist."""
 
     MAX_WORKSPACE_CNT = 20
-    MAX_SCROLL_SPEED = 100
     DEFAULT_MAX_WORKSPACES = 10
     DEFAULT_SCROLL_SPEED = 10
 
@@ -108,38 +110,10 @@ class WidgetI3Workspaces(I3WidgetMixin, RewriteMixin, BarWidget):
         scroll_speed = self.cfg.get("scroll_speed", self.DEFAULT_SCROLL_SPEED)
 
         self.box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        self.scroller = Gtk.ScrolledWindow.new()
-        self.scroller.set_propagate_natural_height(True)
-        self.scroller.set_has_frame(False)
-        self.scroller.set_kinetic_scrolling(False)
-        self.viewport = None
-
-        if scroll_width > 0:
-            scroll_speed = max(1, min(scroll_speed, self.MAX_SCROLL_SPEED))
-            self.scroller.set_min_content_width(scroll_width)
-            self.scroller.set_size_request(scroll_width, -1)
-            self.scroller.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
-            self.viewport = Gtk.Viewport.new()
-            self.viewport.set_child(self.box)
-            self.viewport.set_scroll_to_focus(False)
-
-            h_adj = self.scroller.get_hadjustment()
-
-            def _scroll(_ctrl, _dx, dy):
-                h_adj.set_value(h_adj.get_value() + (dy * scroll_speed))
-                return True
-
-            scroll_ctrl = Gtk.EventControllerScroll.new(
-                Gtk.EventControllerScrollFlags.VERTICAL
-            )
-            scroll_ctrl.connect("scroll", self.guard(_scroll))
-            self.viewport.add_controller(scroll_ctrl)
-            self.scroller.set_child(self.viewport)
-        else:
-            self.scroller.set_propagate_natural_width(True)
-            self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-            self.scroller.set_child(self.box)
-
+        self.scroller = HorizontalScroller(
+            self.box, scroll_width, scroll_speed, self.guard
+        )
+        self.viewport = self.scroller.viewport
         self.append(self.scroller)
 
         # GTK main thread only

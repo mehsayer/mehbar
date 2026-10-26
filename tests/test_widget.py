@@ -153,3 +153,39 @@ def test_widgets_sharing_an_interval_wake_up_apart(make_res_mgr):
     # widgets share the interval, but wake up at different times
     assert [w.interval for w in widgets] == [0.2, 0.2, 0.2]
     assert len({round(d, 3) for d in deadlines}) == 3
+
+
+@pytest.mark.parametrize(
+    ("level", "max_level", "count", "index"),
+    [
+        (0, 100, 4, 0),
+        (24, 100, 4, 0),
+        (25, 100, 4, 1),
+        (99, 100, 4, 3),
+        (150, 100, 4, 3),
+        (-5, 100, 4, 0),
+    ],
+)
+def test_spread_index(level, max_level, count, index):
+    from mehbar.widget import spread_index
+
+    assert spread_index(level, max_level, count) == index
+
+
+def test_request_queue_drops_requests_nobody_receives():
+    from mehbar.widget import RequestQueue
+
+    class _Loop:
+        def call_soon(self, func, *args):
+            func(*args)
+
+    queue = RequestQueue(_Loop(), size=2)
+    queue.put("dropped")
+
+    with queue.receive() as requests:
+        for request in ("a", "b", "dropped, the queue is full"):
+            queue.put(request)
+
+        assert [requests.receive_nowait() for _ in range(2)] == ["a", "b"]
+
+    queue.put("dropped")

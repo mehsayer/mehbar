@@ -1,18 +1,26 @@
 import pytest
 from gi.repository import Gio, GLib
 
-from mehbar._widgets import _wifi, wired
+from mehbar._widgets import _net, _wifi, wired
+from mehbar._widgets._bluetooth import BluezBackend
 from mehbar._widgets._dbus_facade import DBusFacade, DBusUnavailable
-from mehbar._widgets._wifi import WifiOptions, rssi_to_strength
+from mehbar._widgets._net import NetOptions
+from mehbar._widgets._wifi import rssi_to_strength, strength_to_rssi
 from mehbar._widgets.network_rate import WidgetNetworkRate
-from mehbar._widgets.wired import WiredOptions
 
 
 @pytest.mark.parametrize(
-    ("rssi", "percent"), [(-30, 100), (-20, 100), (-65, 50), (-100, 0), (-110, 0)]
+    ("rssi", "percent"),
+    # as NetworkManager maps them
+    [(-30, 100), (-40, 100), (-65, 59), (-70, 50), (-100, 0), (-110, 0)],
 )
 def test_rssi_to_strength(rssi, percent):
     assert rssi_to_strength(rssi) == percent
+
+
+@pytest.mark.parametrize("percent", [0, 25, 50, 75, 100])
+def test_strength_to_rssi_is_the_inverse(percent):
+    assert rssi_to_strength(strength_to_rssi(percent)) == percent
 
 
 WIRELESS = """\
@@ -29,16 +37,16 @@ def test_unmanaged_wifi_signal(tmp_path, monkeypatch, iface, rssi):
     (tmp_path / "wireless").write_text(WIRELESS)
     monkeypatch.setattr(_wifi.UnmanagedBackend, "PATH_WIRELESS", tmp_path / "wireless")
 
-    info = _wifi.UnmanagedBackend().get_info(iface, WifiOptions.SIGNAL)
+    info = _wifi.UnmanagedBackend().get_info(iface, NetOptions.SIGNAL)
 
     assert info.rssi == rssi
-    assert info.percentage == (None if rssi is None else rssi_to_strength(rssi))
+    assert info.percent == (None if rssi is None else rssi_to_strength(rssi))
 
 
 def test_unmanaged_wired_missing_interface_is_down(tmp_path, monkeypatch):
     monkeypatch.setattr(wired.UnmanagedBackend, "PATH_NET", tmp_path)
 
-    info = wired.UnmanagedBackend().get_info("enx0", WiredOptions.NONE)
+    info = wired.UnmanagedBackend().get_info("enx0", NetOptions.NONE)
 
     assert not info.powered and not info.connected
 
@@ -125,6 +133,62 @@ def test_unmanaged_wired_states(
         (iface / "carrier").write_text(carrier + "\n")
     monkeypatch.setattr(wired.UnmanagedBackend, "PATH_NET", tmp_path)
 
-    info = wired.UnmanagedBackend().get_info("eth0", WiredOptions.NONE)
+    info = wired.UnmanagedBackend().get_info("eth0", NetOptions.NONE)
 
     assert (info.powered, info.connected) == (powered, connected)
+
+
+def _iface(root, name, type_="1", device=True, wireless=False):
+    path = root / name
+    path.mkdir()
+    (path / "type").write_text(type_ + "\n")
+    if device:
+        (path / "device").mkdir()
+    if wireless:
+        (path / "wireless").mkdir()
+
+
+def test_interface_detection(tmp_path, monkeypatch):
+    _iface(tmp_path, "lo", type_="772", device=False)
+    _iface(tmp_path, "docker0", device=False)
+    _iface(tmp_path, "enp3s0")
+    _iface(tmp_path, "eno1")
+    _iface(tmp_path, "wlan0", wireless=True)
+    monkeypatch.setattr(_net, "PATH_NET", tmp_path)
+
+    assert _net.ethernet_interfaces() == ["eno1", "enp3s0"]
+    assert _net.wireless_interfaces() == ["wlan0"]
+
+
+def test_backend_detection(monkeypatch):
+    running = {"net.connman.iwd"}
+
+    def _call(self, obj, iface, method, args=None, reply_type=None):
+        return (args.unpack()[0] in running,)
+
+    monkeypatch.setattr(DBusFacade, "call", _call)
+    services = {
+        "org.freedesktop.NetworkManager": "NetworkManager",
+        "net.connman.iwd": "iwd",
+    }
+
+    assert _net.detect_backend(services, "unmanaged") == "iwd"
+
+    running.clear()
+    assert _net.detect_backend(services, "unmanaged") == "unmanaged"
+
+
+@pytest.mark.parametrize(
+    ("uuid", "volume", "percent"),
+    [
+        # A2DP
+        ("0000110b-0000-1000-8000-00805f9b34fb", 127, 100),
+        ("0000110B-0000-1000-8000-00805F9B34FB", 64, 50),
+        # LE Audio
+        ("00008f01-0000-1000-8000-00805f9b34fb", 255, 100),
+        ("00008f01-0000-1000-8000-00805f9b34fb", 64, 25),
+    ],
+)
+def test_bluetooth_volume_percent(uuid, volume, percent):
+    assert BluezBackend.volume_percent({"UUID": uuid, "Volume": volume}) == percent
+    assert BluezBackend.volume_percent({"UUID": uuid}) is None
