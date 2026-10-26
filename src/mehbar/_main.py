@@ -47,6 +47,14 @@ except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
+# GTK redraws only what changed, and leaves stale pixels of text behind, e.g.
+# underscores of a previous window title: the bar is redrawn whole, which is
+# cheap. GTK reads it when the window is created, see `MehBar.do_activate()`.
+FULL_REDRAW = "GSK_DEBUG" not in os.environ
+
+if FULL_REDRAW:
+    os.environ["GSK_DEBUG"] = "full-redraw"
+
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
 from . import _widgets
@@ -416,6 +424,11 @@ class MehBar(Gtk.Application):
             return
 
         self.win.present()
+
+        if FULL_REDRAW:
+            # read by now, programs started by the bar do not inherit it
+            del os.environ["GSK_DEBUG"]
+
         self.win.start_widgets()
 
     def do_shutdown(self):

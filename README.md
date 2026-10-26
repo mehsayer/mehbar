@@ -43,9 +43,9 @@ The `all` extra installs every optional Python dependency, see
 | `-E`, `--exception-info` | Log tracebacks of errors |
 
 Command line options override configuration files. GTK picks the renderer,
-Vulkan, or GL if Vulkan is not available; `GSK_RENDERER` overrides it. With
-the NVIDIA driver, the GL renderer may leave stale pixels behind, e.g. of a
-previous window title, `GSK_DEBUG=full-redraw` avoids that. Only one instance runs at a
+Vulkan, or GL if Vulkan is not available; `GSK_RENDERER` overrides it. The
+bar is redrawn whole, as partial redraws leave stale pixels of text behind,
+e.g. of a previous window title; setting `GSK_DEBUG` turns that off. Only one instance runs at a
 time: starting another one logs a warning and exits, stop the running bar to
 apply new options. For sway, add to its configuration:
 
