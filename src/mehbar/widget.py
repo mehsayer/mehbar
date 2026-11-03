@@ -708,7 +708,7 @@ class WidgetBase(BarWidget):
         self.icon.set_visible(False)
 
         self.set_halign(Gtk.Align.CENTER)
-        self.set_valign(Gtk.Align.CENTER)
+        self.set_valign(Gtk.Align.FILL)
         self.set_homogeneous(False)
 
         self.icon.set_pixel_size(self.res_mgr.pixel_size)

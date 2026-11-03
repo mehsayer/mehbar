@@ -47,14 +47,6 @@ except ValueError as ex:
     logging.critical(str(ex))
     sys.exit(1)
 
-# GTK redraws only what changed, and leaves stale pixels of text behind, e.g.
-# underscores of a previous window title: the bar is redrawn whole, which is
-# cheap. GTK reads it when the window is created, see `MehBar.do_activate()`.
-FULL_REDRAW = "GSK_DEBUG" not in os.environ
-
-if FULL_REDRAW:
-    os.environ["GSK_DEBUG"] = "full-redraw"
-
 from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell  # type: ignore
 
 from . import _widgets
@@ -126,6 +118,8 @@ class MehBarGUI(Gtk.ApplicationWindow):
 
         self._setup_layer_shell(bar_cfg)
 
+        self._round_glyph_positions()
+
         self._css_providers: list[Gtk.CssProvider] = []
         self._load_css()
         self._follow_color_scheme()
@@ -141,7 +135,7 @@ class MehBarGUI(Gtk.ApplicationWindow):
         for section in self.SECTION_NAMES:
             box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
             box.set_name(section)
-            box.set_valign(Gtk.Align.CENTER)
+            box.set_valign(Gtk.Align.FILL)
             self.boxes[section] = box
             self.main_box.append(box)
 
@@ -218,6 +212,19 @@ class MehBarGUI(Gtk.ApplicationWindow):
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, True)
             self.set_default_size(-1, height)
+
+    @staticmethod
+    def _round_glyph_positions():
+        # GTK 4.16+ renders text at fractional positions by default, and hinted
+        # glyphs then overflow the bounds GTK computes for the text by a pixel:
+        # changed labels leave descenders and underscores of their old text
+        # behind, partial redraws do not cover them. Hinted font metrics put the
+        # glyphs on whole pixels.
+        settings = Gtk.Settings.get_default()
+        if settings is None or settings.find_property("gtk-font-rendering") is None:
+            return
+        settings.set_property("gtk-font-rendering", Gtk.FontRendering.MANUAL)
+        settings.set_property("gtk-hint-font-metrics", True)
 
     def _follow_color_scheme(self):
         if not self.res_mgr.follows_desktop:
@@ -424,11 +431,6 @@ class MehBar(Gtk.Application):
             return
 
         self.win.present()
-
-        if FULL_REDRAW:
-            # read by now, programs started by the bar do not inherit it
-            del os.environ["GSK_DEBUG"]
-
         self.win.start_widgets()
 
     def do_shutdown(self):

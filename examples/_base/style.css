@@ -87,8 +87,9 @@ box {
     color: @mb_magenta;
     background-color: alpha(@mb_magenta, 0.12);
     border-radius: 4px;
-    padding: 2px 8px;
-    margin: 0 4px;
+    padding: 0 8px;
+    /* widgets fill the bar height, the margins make a pill of it */
+    margin: 5px 4px;
 }
 
 .bar-widget.i3_mode .bar-widget-icon {
@@ -101,7 +102,7 @@ box {
 .i3-workspace {
     color: @mb_fg_dark;
     padding: 0 8px;
-    margin: 0;
+    margin: 5px 0;
     border-radius: 4px;
     transition: color 120ms ease-out, background-color 120ms ease-out;
 }
